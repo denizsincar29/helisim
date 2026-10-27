@@ -60,12 +60,14 @@ _DEFAULTS = dict(
     empty_mass=840.0, mtow=1450.0, payload_kg=80.0, fuel_capacity=280.0,
     max_power_kw=313.0, max_cont_power_kw=270.0, power_lapse=0.85,
     idle_n1=0.62, idle_power_frac=0.12, idle_nr=0.55,
-    thrust_ratio=1.8,              # макс. тяга НВ / (mtow*g) на уровне моря, 100% оборотов
+    thrust_ratio=1.55,             # макс. тяга НВ / (mtow*g) на уровне моря, 100% оборотов
     min_coll=0.04,                 # доля тяги при шаге на нуле
-    kappa=1.15, profile_power_kw=25.0, tail_power_frac=0.08, tail_k=1.2,
+    heave_damp=4.0,                # приток при подъёме снижает угол атаки лопастей (демпфирование вертикальной скорости)
+    drivetrain_eff=0.85,           # КПД трансмиссии/привода агрегатов: вал двигателя -> ротор
+    kappa=1.2, profile_power_kw=25.0, tail_power_frac=0.08, tail_k=1.2,
     gov_gain=40.0, brake_decel=0.08,
     yaw_damp=2.5, weathercock=3.0, max_yaw_rate=110.0,
-    cda_h=1.1, cda_v=1.6, vne=62.0,
+    cda_h=1.25, cda_v=1.6, vne=62.0,
     sfc=0.33, idle_fuel_kgh=35.0, low_fuel_frac=0.15,
     cyclic_mode="attitude",        # "attitude" (стик = угол) | "rate" (стик = скорость вращения)
     max_cmd_pitch=25.0, max_cmd_roll=30.0, max_pitch_rate=45.0, max_roll_rate=60.0,
@@ -99,7 +101,7 @@ PRESETS = {
         max_power_kw=98.0, max_cont_power_kw=93.0, power_lapse=1.0,
         idle_n1=0.40, idle_power_frac=0.10, idle_nr=0.45,
         profile_power_kw=8.0, yaw_damp=3.5, weathercock=4.0,
-        cda_h=0.65, cda_v=1.0, vne=50.0, sfc=0.30, idle_fuel_kgh=6.0,
+        cda_h=0.8, cda_v=1.0, vne=50.0, sfc=0.30, idle_fuel_kgh=6.0,
         max_pitch_rate=70.0, max_roll_rate=90.0, att_tau=0.18, att_gain=3.0,
         light_off_n1=0.12, starter_rate=0.08, starter_cutout=0.30, self_sustain_n1=0.0,
         start_accel=0.12, n1_tau=1.2, n1_decay=0.1, egt_limit=700.0,
@@ -112,8 +114,8 @@ PRESETS = {
         rotor_inertia=40000.0, yaw_inertia=60000.0,
         empty_mass=7200.0, mtow=12000.0, payload_kg=300.0, fuel_capacity=1870.0,
         max_power_kw=2600.0, max_cont_power_kw=2200.0, power_lapse=0.9,
-        idle_n1=0.65, thrust_ratio=1.7, profile_power_kw=150.0, tail_power_frac=0.10,
-        yaw_damp=2.0, weathercock=2.0, cda_h=5.0, cda_v=8.0, vne=69.0,
+        idle_n1=0.65, thrust_ratio=1.5, profile_power_kw=150.0, tail_power_frac=0.10,
+        yaw_damp=2.0, weathercock=2.0, cda_h=3.2, cda_v=8.0, vne=69.0,
         sfc=0.28, idle_fuel_kgh=220.0,
         max_cmd_pitch=18.0, max_cmd_roll=25.0, max_pitch_rate=20.0, max_roll_rate=25.0,
         att_gain=1.6, att_tau=0.6,
@@ -256,7 +258,7 @@ class Engine(object):
         c = self.h.cfg
         x = clamp((self.n1 - c.idle_n1) / (1.0 - c.idle_n1), 0.0, 1.0)
         frac = c.idle_power_frac + (1.0 - c.idle_power_frac) * x
-        return c.max_power_w * frac * (rho_ratio ** c.power_lapse) * self.health
+        return c.max_power_w * c.drivetrain_eff * frac * (rho_ratio ** c.power_lapse) * self.health
 
     def step(self, dt):
         h = self.h
@@ -333,7 +335,7 @@ class Engine(object):
 
         # температура
         if self.state == "running":
-            load = h.p_eng_w / max(c.max_power_w, 1.0)
+            load = h.p_eng_w / max(c.max_power_w * c.drivetrain_eff, 1.0)
             egt_t = 15.0 + 300.0 * self.n1 + 450.0 * load
         elif self.state == "starting":
             frac = clamp((self.n1 - c.light_off_n1) / max(c.idle_n1 - c.light_off_n1, 0.01), 0.0, 1.0)
@@ -348,7 +350,7 @@ class Engine(object):
         # расход топлива
         flow = 0.0
         if self.state == "running":
-            flow = c.idle_fuel_kgh / 3600.0 + c.sfc * (h.p_eng_w / 1000.0) / 3600.0
+            flow = c.idle_fuel_kgh / 3600.0 + c.sfc * (h.p_eng_w / c.drivetrain_eff / 1000.0) / 3600.0
         elif self.state == "starting":
             flow = 0.5 * c.idle_fuel_kgh / 3600.0
         h.fuel_flow_kgh = flow * 3600.0
@@ -670,7 +672,8 @@ class Helicopter(object):
         rbs = clamp((vxd - vcrit) / (0.15 * c.vne), 0.0, 1.0)
         self._vrs = vrs
         self._rbs = rbs
-        T = t0 * stall_lo * (1.0 + 0.12 * ge) * (1.0 - 0.4 * vrs) * (1.0 - 0.3 * rbs)
+        infl = clamp(1.0 - c.heave_damp * vc / (c.omega0 * c.rotor_radius * max(nr, 0.3)), 0.5, 1.3)
+        T = t0 * stall_lo * infl * (1.0 + 0.12 * ge) * (1.0 - 0.4 * vrs) * (1.0 - 0.3 * rbs)
         T = max(T, 0.0)
         self.thrust = T
 
@@ -695,7 +698,7 @@ class Helicopter(object):
         self.p_eng_w = p_eng
         dnr = (p_eng - p_load - p_brake) / (c.ke_scale * max(nr, 0.05))
         self.nr = max(nr + dnr * dt, 0.0)
-        self.torque_pct = 100.0 * p_eng / (c.max_cont_w * max(nr, 0.2))
+        self.torque_pct = 100.0 * p_eng / (c.max_cont_w * c.drivetrain_eff * max(nr, 0.2))
 
         # рыскание
         omega = max(nr, 0.2) * c.omega0
