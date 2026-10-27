@@ -26,7 +26,7 @@ DEG = math.pi / 180.0
 FT = 3.280839895                       # футов в метре
 
 # ключи данных событий, значения которых пересчитываются при imperial_units
-_LEN_KEYS = ("x", "y", "z", "agl")
+_LEN_KEYS = ("x", "y", "z", "agl", "dx", "dy", "dz", "distance")
 _SPEED_KEYS = ("ground_speed", "airspeed", "vz", "speed", "sink", "vertical_speed", "vx", "vy")
 
 
@@ -93,6 +93,11 @@ _DEFAULTS = dict(
     rpm_step=0.02, n1_step=0.02, torque_step=5.0, alt_step=1.0, pos_step=2.0,
     heading_step=5.0, att_step=2.0, speed_step=2.0, vs_step=1.0, fuel_step_frac=0.02,
     max_substep=0.02,
+    position_mode="delta",         # "delta": вертолёт не знает карту, шлёт событие moved (смещение);
+                                   # "absolute": ещё и position_changed + x,y в get_state()
+    move_step=0.0,                 # м: копить смещение до этого порога (0 = событие moved в каждом update при движении)
+    map_edge_mode="pass",          # "pass": край карты не влияет на физику; "block": гасит скорость в сторону края
+    max_dt=1.0,                    # защита от скачка времени (с); для пауз используйте pause()/resume()
     imperial_units=False,          # True: на границе API футы и фут/с (внутри всегда СИ)
     auto_ground=False,             # True: вертолёт сам ловит z<=ground_z (для тестов без игры)
 )
@@ -394,6 +399,9 @@ class Helicopter(object):
         if ground_z is not None:
             ground_z = ground_z / self.lk
         self.t = 0.0                       # время симуляции, с
+        self.paused = False
+        self._reanchor = False
+        self._edge_t = -999.0
         self._last_ts = timestamp
         self.payload_kg = c.payload_kg
         self.fuel_kg = c.fuel_capacity if fuel_kg is None else fuel_kg
@@ -574,15 +582,18 @@ class Helicopter(object):
     def update(self, timestamp=None):
         if timestamp is None:
             timestamp = time.monotonic()
-        if self._last_ts is None:
-            self._last_ts = timestamp
+        if self.paused:
+            return self.pop_events()        # время не идёт; команды ставятся в очередь событий
+        if self._last_ts is None or self._reanchor:
+            self._last_ts = timestamp        # первый вызов или первый после resume: только привязка часов
+            self._reanchor = False
             return self.pop_events()
         dt = timestamp - self._last_ts
         self._last_ts = timestamp
         if dt <= 0.0:
             return self.pop_events()
-        if dt > 1.0:
-            dt = 1.0                        # пауза/лаг: не взрываем интегратор
+        if dt > self.cfg.max_dt:
+            dt = self.cfg.max_dt             # лаг: не взрываем интегратор (для пауз - pause()/resume())
         if self.crashed:
             self.t += dt
             return self.pop_events()
@@ -594,6 +605,31 @@ class Helicopter(object):
                 break
         self._emit_changes()
         return self.pop_events()
+
+    def pause(self, reason=""):
+        """Заморозить вертолёт (перезагрузка карты, кат-сцена, меню). Время симуляции стоит."""
+        if not self.paused:
+            self.paused = True
+            self._ev("paused", {"reason": reason})
+
+    def resume(self, timestamp=None):
+        """Продолжить. Время паузы не засчитывается. timestamp - если вы сами ведёте часы."""
+        if self.paused:
+            self.paused = False
+            if timestamp is None:
+                self._reanchor = True        # привяжемся к часам на ближайшем update()
+            else:
+                self._last_ts = timestamp
+                self._reanchor = False
+            self._ev("resumed", {})
+
+    def reset_clock(self, timestamp=None):
+        """Перепривязать часы (без паузы), например после долгой загрузки."""
+        if timestamp is None:
+            self._reanchor = True
+        else:
+            self._last_ts = timestamp
+            self._reanchor = False
 
     def _step(self, dt):
         self.t += dt
@@ -842,8 +878,9 @@ class Helicopter(object):
         self.crash_reason = reason
         data = dict(data)
         data["reason"] = reason
-        data["x"] = self.x
-        data["y"] = self.y
+        if self.cfg.position_mode == "absolute":
+            data["x"] = self.x
+            data["y"] = self.y
         data["z"] = self.z
         self.vx = self.vy = self.vz = 0.0
         self.p = self.q = self.r = 0.0
@@ -928,6 +965,28 @@ class Helicopter(object):
             self.airframe_health -= 0.02 * closing
             self._ev("bump", info)
 
+    def reached_map_edge(self, nx=None, ny=None, mode=None):
+        """Игра: вертолёт у края карты. Вертолёт карту не знает.
+        mode "pass" (по умолчанию из конфига): физика не меняется, только событие map_edge -
+          игра сама перекидывает игрока на другую карту (вертолёту об этом знать не нужно).
+        mode "block": гасит составляющую скорости в сторону края (нормаль (nx, ny) смотрит внутрь карты;
+          без нормали - гасит всю горизонтальную скорость). Звать каждый кадр, пока упираемся."""
+        if self.crashed:
+            return
+        mode = mode or self.cfg.map_edge_mode
+        if mode == "block":
+            if nx is None or ny is None:
+                self.vx = 0.0
+                self.vy = 0.0
+            else:
+                closing = -(self.vx * nx + self.vy * ny)
+                if closing > 0.0:
+                    self.vx += closing * nx
+                    self.vy += closing * ny
+        if self.t - self._edge_t >= 1.0:       # не спамим событием, если зовут каждый кадр
+            self._edge_t = self.t
+            self._ev("map_edge", {"mode": mode})
+
     def reached_ceiling(self):
         if self.crashed:
             return
@@ -972,7 +1031,8 @@ class Helicopter(object):
     def _reset_reports(self):
         self._rep = {"nr": 0.0, "n1": 0.0, "torque": 0.0, "z": self.z, "x": self.x, "y": self.y,
                      "heading": self.heading, "pitch": 0.0, "roll": 0.0, "gs": 0.0, "vs": 0.0,
-                     "fuel": self.fuel_kg, "trend": "level", "bus": self.bus_power}
+                     "fuel": self.fuel_kg, "trend": "level", "bus": self.bus_power,
+                     "mx": self.x, "my": self.y, "mz": self.z}
 
     def _emit_changes(self):
         c = self.cfg
@@ -989,12 +1049,31 @@ class Helicopter(object):
         if abs(self.z - r["z"]) >= c.alt_step:
             r["z"] = self.z
             self._ev("altitude_changed", {"z": self.z, "agl": self.z - self.ground_z})
-        dx = self.x - r["x"]
-        dy = self.y - r["y"]
-        if dx * dx + dy * dy >= c.pos_step * c.pos_step:
-            r["x"] = self.x
-            r["y"] = self.y
-            self._ev("position_changed", {"x": self.x, "y": self.y})
+        # смещение с прошлого отчёта: игра двигает игрока по нему, карту вертолёт не знает
+        mdx = self.x - r["mx"]
+        mdy = self.y - r["my"]
+        mdz = self.z - r["mz"]
+        hd = math.sqrt(mdx * mdx + mdy * mdy)
+        if (hd >= 1e-4 or abs(mdz) >= 1e-4) and hd >= c.move_step:
+            if hd >= 1e-4:
+                bearing = math.atan2(mdx, mdy) / DEG % 360.0
+            else:
+                bearing = self.heading
+            self._ev("moved", {"dx": mdx, "dy": mdy, "dz": mdz, "distance": hd,
+                               "bearing": bearing,
+                               "relative_bearing": angle_diff(bearing, self.heading),
+                               "elevation": math.atan2(mdz, hd) / DEG,
+                               "heading": self.heading})
+            r["mx"] = self.x
+            r["my"] = self.y
+            r["mz"] = self.z
+        if c.position_mode == "absolute":
+            dx = self.x - r["x"]
+            dy = self.y - r["y"]
+            if dx * dx + dy * dy >= c.pos_step * c.pos_step:
+                r["x"] = self.x
+                r["y"] = self.y
+                self._ev("position_changed", {"x": self.x, "y": self.y})
         if abs(angle_diff(self.heading, r["heading"])) >= c.heading_step:
             r["heading"] = self.heading
             self._ev("heading_changed", {"heading": self.heading})
@@ -1033,9 +1112,10 @@ class Helicopter(object):
         c = self.cfg
         gs = math.sqrt(self.vx * self.vx + self.vy * self.vy)
         k = self.lk
-        return {
+        st = {
             "units": {"length": "ft" if self.imperial else "m", "speed": "ft/s" if self.imperial else "m/s"},
-            "t": self.t, "x": self.x * k, "y": self.y * k, "z": self.z * k, "agl": (self.z - self.ground_z) * k,
+            "t": self.t, "paused": self.paused,
+            "z": self.z * k, "agl": (self.z - self.ground_z) * k,
             "heading": self.heading, "pitch": self.pitch, "roll": self.roll,
             "pitch_rate": self.q, "roll_rate": self.p, "yaw_rate": self.r,
             "vx": self.vx * k, "vy": self.vy * k, "vz": self.vz * k, "ground_speed": gs * k,
@@ -1053,3 +1133,7 @@ class Helicopter(object):
             "switches": dict(self.sw), "buttons": dict(self.btn),
             "warnings": [k for k in self.warn if self.warn[k]],
         }
+        if c.position_mode == "absolute":
+            st["x"] = self.x * k
+            st["y"] = self.y * k
+        return st

@@ -3,7 +3,7 @@ import sys
 import math
 from helisim import Helicopter, HelicopterConfig, angle_diff
 
-QUIET = ("rotor_rpm_changed", "engine_rpm_changed", "torque_changed", "altitude_changed",
+QUIET = ("moved", "rotor_rpm_changed", "engine_rpm_changed", "torque_changed", "altitude_changed",
          "position_changed", "heading_changed", "attitude_changed", "speed_changed",
          "vertical_speed_changed", "fuel_changed")
 
@@ -26,7 +26,7 @@ class World(object):
 def run(preset, verbose_all=False, wall_y=None, fly_speed_pitch=0.35):
     h = Helicopter(preset, timestamp=0.0)
     w = World(h, wall_y)
-    log = []
+    pos = [0.0, 0.0]
     dt = 0.05
     ts = 0.0
     st = {"phase": "init", "t0": 0.0, "hdg": 0.0}
@@ -43,6 +43,9 @@ def run(preset, verbose_all=False, wall_y=None, fly_speed_pitch=0.35):
         w.check()
         evs += h.pop_events()
         for e in evs:
+            if e.name == "moved":
+                pos[0] += e.data["dx"]
+                pos[1] += e.data["dy"]
             if verbose_all or e.name not in QUIET:
                 print(e)
         return evs
@@ -139,7 +142,7 @@ def run(preset, verbose_all=False, wall_y=None, fly_speed_pitch=0.35):
             tick()
     s = h.get_state()
     print("ИТОГ: t=%.0fs x=%.0f y=%.0f z=%.1f двигатель=%s топливо=%.1f кг" %
-          (s["t"], s["x"], s["y"], s["z"], s["engine_state"], s["fuel_kg"]))
+          (s["t"], pos[0], pos[1], s["z"], s["engine_state"], s["fuel_kg"]))
 
 
 def clamp(v, lo, hi):
