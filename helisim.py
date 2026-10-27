@@ -23,6 +23,11 @@ import time
 G = 9.80665
 RHO0 = 1.225
 DEG = math.pi / 180.0
+FT = 3.280839895                       # футов в метре
+
+# ключи данных событий, значения которых пересчитываются при imperial_units
+_LEN_KEYS = ("x", "y", "z", "agl")
+_SPEED_KEYS = ("ground_speed", "airspeed", "vz", "speed", "sink", "vertical_speed", "vx", "vy")
 
 
 def clamp(v, lo, hi):
@@ -81,18 +86,21 @@ _DEFAULTS = dict(
     # земля и разрушения
     ground_mu=0.4, ground_effect=True,
     crash_sink=5.5, hard_sink=3.0, crash_tilt=22.0, crash_ground_speed=10.0, wall_crash_speed=4.0,
-    nr_low=0.94, nr_high=1.07, nr_overspeed=1.18,
+    nr_low=0.94, nr_high=1.07, nr_overspeed=1.22,
     # скорости приводов органов управления (доля хода в секунду)
     collective_rate=0.6, throttle_rate=0.35, cyclic_rate=2.5, pedal_rate=2.5,
     # пороги событий об изменении параметров
     rpm_step=0.02, n1_step=0.02, torque_step=5.0, alt_step=1.0, pos_step=2.0,
     heading_step=5.0, att_step=2.0, speed_step=2.0, vs_step=1.0, fuel_step_frac=0.02,
     max_substep=0.02,
+    imperial_units=False,          # True: на границе API футы и фут/с (внутри всегда СИ)
     auto_ground=False,             # True: вертолёт сам ловит z<=ground_z (для тестов без игры)
 )
 
 PRESETS = {
-    "medium_turbine": {},
+    "medium_turbine": dict(thrust_ratio=1.4, kappa=1.3, profile_power_kw=45.0, drivetrain_eff=0.82,
+                           heave_damp=5.0),
+    "medium_turbine_agile": dict(name="medium_turbine_agile"),   # прежняя «бодрая» настройка: быстрый подъём
     "light_piston": dict(
         name="light_piston", engine_type="piston", has_clutch=True, needs_ignition=True,
         start_needs_pump=False,
@@ -369,13 +377,22 @@ class Engine(object):
 
 class Helicopter(object):
     def __init__(self, config=None, timestamp=None, x=0.0, y=0.0, z=0.0, heading=0.0,
-                 fuel_kg=None, ground_z=None):
+                 fuel_kg=None, ground_z=None, imperial_units=None):
+        """x, y, z, ground_z - в единицах API (метры или футы, см. imperial_units).
+        Публичные атрибуты (self.x, self.z, self.vx ...) всегда в метрах; для игры - get_state() и события."""
         if config is None:
             config = HelicopterConfig()
         elif isinstance(config, str):
             config = HelicopterConfig(config)
         self.cfg = config
         c = config
+        self.imperial = c.imperial_units if imperial_units is None else bool(imperial_units)
+        self.lk = FT if self.imperial else 1.0         # единицы API на метр
+        x = x / self.lk
+        y = y / self.lk
+        z = z / self.lk
+        if ground_z is not None:
+            ground_z = ground_z / self.lk
         self.t = 0.0                       # время симуляции, с
         self._last_ts = timestamp
         self.payload_kg = c.payload_kg
@@ -429,8 +446,18 @@ class Helicopter(object):
         self._reset_reports()
 
     # ------------------------------------------------------------ события
+    def _out(self, data):
+        """Пересчёт длин и скоростей в единицы API (копия словаря)."""
+        if self.lk == 1.0:
+            return data
+        d = dict(data)
+        for k in d:
+            if k in _LEN_KEYS or k in _SPEED_KEYS:
+                d[k] = d[k] * self.lk
+        return d
+
     def _ev(self, name, data):
-        e = Event(self.t, name, data)
+        e = Event(self.t, name, self._out(data))
         self._events.append(e)
         subs = self._subs.get(name, []) + self._subs.get("*", [])
         for fn in subs:
@@ -462,6 +489,7 @@ class Helicopter(object):
         if self.sw[name] != bool(on):
             self.sw[name] = bool(on)
             self._ev("switch", {"name": name, "on": bool(on)})
+            self.elec.step(0.0)             # питание шины доступно сразу, не ждёт следующего update()
         return True
 
     def toggle(self, name):
@@ -831,7 +859,7 @@ class Helicopter(object):
             return
         c = self.cfg
         if ground_z is not None:
-            self.ground_z = ground_z
+            self.ground_z = ground_z / self.lk
         if self.on_ground:
             self.z = self.ground_z
             return
@@ -865,7 +893,11 @@ class Helicopter(object):
 
     def set_ground_level(self, ground_z):
         """Игра: высота поверхности под вертолётом (для эффекта земли и высоты AGL)."""
-        self.ground_z = ground_z
+        self.ground_z = ground_z / self.lk
+
+    def set_wind(self, east, north, up=0.0):
+        """Ветер в единицах API (на будущее; в расчётах скорость уже считается относительно воздуха)."""
+        self.wind = [east / self.lk, north / self.lk, up / self.lk]
 
     def reached_wall(self, nx=None, ny=None, part="fuselage"):
         """Игра: упёрлись в стену/препятствие. (nx, ny) - нормаль стены в сторону вертолёта.
@@ -1000,12 +1032,14 @@ class Helicopter(object):
     def get_state(self):
         c = self.cfg
         gs = math.sqrt(self.vx * self.vx + self.vy * self.vy)
+        k = self.lk
         return {
-            "t": self.t, "x": self.x, "y": self.y, "z": self.z, "agl": self.z - self.ground_z,
+            "units": {"length": "ft" if self.imperial else "m", "speed": "ft/s" if self.imperial else "m/s"},
+            "t": self.t, "x": self.x * k, "y": self.y * k, "z": self.z * k, "agl": (self.z - self.ground_z) * k,
             "heading": self.heading, "pitch": self.pitch, "roll": self.roll,
             "pitch_rate": self.q, "roll_rate": self.p, "yaw_rate": self.r,
-            "vx": self.vx, "vy": self.vy, "vz": self.vz, "ground_speed": gs, "airspeed": self.airspeed(),
-            "vertical_speed": self.vz,
+            "vx": self.vx * k, "vy": self.vy * k, "vz": self.vz * k, "ground_speed": gs * k,
+            "airspeed": self.airspeed() * k, "vertical_speed": self.vz * k,
             "on_ground": self.on_ground, "crashed": self.crashed, "crash_reason": self.crash_reason,
             "engine_state": self.engine.state, "n1_pct": self.engine.n1 * 100.0,
             "nr_pct": self.nr * 100.0, "torque_pct": self.torque_pct, "egt": self.engine.egt,

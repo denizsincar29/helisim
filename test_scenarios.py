@@ -54,13 +54,13 @@ h.engine.set_state("failed")
 t = h._last_ts
 for i in range(int(30.0 / 0.05)):
     t += 0.05
-    h.turn("collective", max(0.0, min(1.0, 0.25 + 6.0 * (h.nr - 1.0))))
+    h.turn("collective", max(0.0, min(1.0, 0.45 + 4.0 * (h.nr - 1.0))))
     for e in names(h.update(t)):
         print(e)
-    if h.crashed or h.vz > -0.1 and i > 100:
+    if h.crashed or h.z < 3.0:
         break
 s = h.get_state()
-print("через 31 с: nr=%.0f%% vz=%.1f высота=%.0f crashed=%s" % (s["nr_pct"], s["vz"], s["z"], s["crashed"]))
+print("у земли (t=%.0f с): nr=%.0f%% vz=%.1f высота=%.0f crashed=%s" % (s["t"], s["nr_pct"], s["vz"], s["z"], s["crashed"]))
 
 print("\n== 3. отказ двигателя, шаг НЕ снижают (ротор садится)")
 h = airborne(alt=100.0, speed=0.0)

@@ -17,7 +17,8 @@ def hover_coll(h, alt):
         else: lo = m
     return m, g
 
-for p in ("light_piston", "medium_turbine", "heavy_twin"):
+from helisim import PRESETS
+for p in PRESETS:
     h = T.airborne_like(Helicopter(p, timestamp=0.0), 50.0)
     c = h.cfg
     out = {}
