@@ -431,6 +431,7 @@ class Helicopter(object):
         self.starter_active = False
         self.airframe_health = 1.0
         self.overspeed_t = 0.0
+        self._ot_t = 0.0
         self._vrs = 0.0
         self._rbs = 0.0
         self._events = []
@@ -852,7 +853,11 @@ class Helicopter(object):
         asp = self.airspeed()
         self._warn("low_rotor_rpm", (not self.on_ground) and 0.3 < self.nr < c.nr_low)
         self._warn("high_rotor_rpm", self.nr > c.nr_high)
-        self._warn("overtorque", self.torque_pct > 100.0)
+        if self.torque_pct > 100.0 and self.nr > 0.97:
+            self._ot_t += dt                  # короткий пик (раскрутка, рывок шагом) - норма
+        else:
+            self._ot_t = max(self._ot_t - 2.0 * dt, 0.0)
+        self._warn("overtorque", self._ot_t > 3.0)
         self._warn("overtemp", e.egt > c.egt_limit)
         self._warn("low_fuel", self.fuel_kg < c.low_fuel_frac * c.fuel_capacity and e.state == "running")
         self._warn("low_battery", self.sw["battery"] and self.elec.charge < 0.25 * c.battery_ah)
@@ -986,6 +991,13 @@ class Helicopter(object):
         if self.t - self._edge_t >= 1.0:       # не спамим событием, если зовут каждый кадр
             self._edge_t = self.t
             self._ev("map_edge", {"mode": mode})
+
+    def fail_engine(self, reason="failure"):
+        """Игра: отказ двигателя извне (попадание, птица, баг-триггер). Дальше - авторотация."""
+        if self.engine.state != "failed" and not self.crashed:
+            self.engine.health = 0.0
+            self._ev("engine_failure", {"reason": reason})
+            self.engine.set_state("failed")
 
     def reached_ceiling(self):
         if self.crashed:
