@@ -1,79 +1,79 @@
-"""Общее для примеров: текстовая озвучка событий, обёртка с часами и простой автопилот.
-Вывод - чистый текст, по строке на событие (удобно для экранного диктора)."""
+"""Shared by the examples: spoken text for events, a wrapper with a clock, and a simple autopilot.
+The output is plain text, one line per event (friendly to screen readers)."""
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from helisim import Helicopter, HelicopterConfig, PRESETS, SWITCH_INFO, BUTTON_INFO, FT  # noqa: E402,F401
 
-STATE_RU = {"off": "остановлен", "cranking": "прокрутка", "starting": "запуск",
-            "running": "работает", "shutdown": "останов", "failed": "отказ"}
-WARN_RU = {
-    "low_rotor_rpm": "низкие обороты ротора", "high_rotor_rpm": "высокие обороты ротора",
-    "overtorque": "превышен крутящий момент", "overtemp": "перегрев двигателя",
-    "low_fuel": "мало топлива", "low_battery": "батарея разряжена",
-    "vortex_ring": "вихревое кольцо", "retreating_blade_stall": "срыв на отступающей лопасти",
-    "overspeed": "превышена максимальная скорость", "rotor_brake_on": "тормоз ротора включён",
-    "hard_landing": "жёсткая посадка",
+STATE_TEXT = {"off": "stopped", "cranking": "cranking", "starting": "starting",
+              "running": "running", "shutdown": "shutting down", "failed": "failed"}
+WARN_TEXT = {
+    "low_rotor_rpm": "low rotor rpm", "high_rotor_rpm": "high rotor rpm",
+    "overtorque": "torque limit exceeded", "overtemp": "engine over temperature",
+    "low_fuel": "low fuel", "low_battery": "low battery",
+    "vortex_ring": "vortex ring state", "retreating_blade_stall": "retreating blade stall",
+    "overspeed": "never-exceed speed exceeded", "rotor_brake_on": "rotor brake is on",
+    "hard_landing": "hard landing",
 }
-REJECT_RU = {"no_electric_power": "нет питания", "engine_running": "двигатель уже работает",
-             "engine_not_running": "двигатель не работает", "not_installed": "на этом вертолёте нет",
-             "unknown": "неизвестная команда", "crashed": "вертолёт разбит"}
-CRASH_RU = {"hard_landing": "жёсткое падение", "tilted_landing": "посадка с большим креном",
-            "fast_landing": "посадка на большой скорости", "wall_impact": "удар о препятствие",
-            "rotor_strike": "удар винтом", "tail_strike": "удар хвостом", "water": "падение в воду",
-            "rotor_overspeed": "раскрутка ротора", "structural_failure": "разрушение конструкции"}
-TREND_RU = {"climb": "набор высоты", "descent": "снижение", "level": "горизонтальный полёт"}
+REJECT_TEXT = {"no_electric_power": "no electric power", "engine_running": "the engine is already running",
+             "engine_not_running": "the engine is not running", "not_installed": "not installed on this helicopter",
+             "unknown": "unknown command", "crashed": "the helicopter is wrecked"}
+CRASH_TEXT = {"hard_landing": "hard impact with the ground", "tilted_landing": "landing with a large bank angle",
+            "fast_landing": "landing at high speed", "wall_impact": "collision with an obstacle",
+            "rotor_strike": "rotor strike", "tail_strike": "tail strike", "water": "water impact",
+            "rotor_overspeed": "rotor overspeed", "structural_failure": "structural failure"}
+TREND_TEXT = {"climb": "climbing", "descent": "descending", "level": "level flight"}
 
 
 def phrase(e):
-    """Событие -> фраза для озвучки или None, если событие не для голоса."""
+    """Event -> a phrase for speech, or None if the event is not meant to be spoken."""
     n, d = e.name, e.data
     if n == "switch":
-        return "%s: %s" % (SWITCH_INFO[d["name"]], "включено" if d["on"] else "выключено")
+        return "%s: %s" % (SWITCH_INFO[d["name"]], "on" if d["on"] else "off")
     if n == "button" and d["pressed"]:
-        return "Кнопка: %s" % BUTTON_INFO[d["name"]]
+        return "Button: %s" % BUTTON_INFO[d["name"]]
     if n == "command_rejected":
-        return "Не выполнено, %s" % REJECT_RU.get(d["reason"], d["reason"])
+        return "Command rejected, %s" % REJECT_TEXT.get(d["reason"], d["reason"])
     if n == "engine_state":
-        return "Двигатель: %s" % STATE_RU[d["new"]]
+        return "Engine: %s" % STATE_TEXT[d["new"]]
     if n == "engine_started":
-        return "Двигатель запущен"
+        return "Engine started"
     if n == "starter_cutout":
-        return "Стартёр отключился"
+        return "Starter cut out"
     if n == "hot_start":
-        return "Горячий запуск! Уберите газ"
+        return "Hot start! Retard the throttle"
     if n == "start_failed":
-        return "Запуск сорван"
+        return "Start failed"
     if n == "engine_flameout":
-        return "Двигатель заглох"
+        return "Engine flameout"
     if n == "engine_failure":
-        return "Отказ двигателя"
+        return "Engine failure"
     if n == "fuel_exhausted":
-        return "Топливо кончилось"
+        return "Out of fuel"
     if n == "warning":
-        return "%s: %s" % ("Внимание" if d["active"] else "Отбой", WARN_RU.get(d["id"], d["id"]))
+        return "%s: %s" % ("Warning" if d["active"] else "Clear", WARN_TEXT.get(d["id"], d["id"]))
     if n == "liftoff":
-        return "Оторвались от земли"
+        return "Lifted off"
     if n == "touchdown":
-        return "Касание, вертикальная %.1f%s" % (d["sink"], " жёсткое" if d["hard"] else "")
+        return "Touchdown, sink rate %.1f%s" % (d["sink"], " (hard)" if d["hard"] else "")
     if n == "bump":
-        return "Касание препятствия"
+        return "Bumped an obstacle"
     if n == "crashed":
-        return "Крушение: %s" % CRASH_RU.get(d["reason"], d["reason"])
+        return "Crash: %s" % CRASH_TEXT.get(d["reason"], d["reason"])
     if n == "map_edge":
-        return "Край карты"
+        return "Map edge"
     if n == "paused":
-        return "Пауза"
+        return "Paused"
     if n == "resumed":
-        return "Продолжили"
+        return "Resumed"
     if n == "vertical_trend_changed":
-        return TREND_RU[d["trend"]]
+        return TREND_TEXT[d["trend"]]
     return None
 
 
 class Sim(object):
-    """Игровой цикл в миниатюре: часы с шагом dt, проверка земли, озвучка, накопление смещения."""
+    """A miniature game loop: a clock with step dt, a ground check, speech, accumulation of displacement."""
 
     def __init__(self, heli, dt=0.05, speak=True):
         self.h = heli
@@ -82,17 +82,17 @@ class Sim(object):
         self.speak = speak
         self.pos = [0.0, 0.0]
         self.ground_check = True
-        heli.update(self.ts)                   # привязка часов
+        heli.update(self.ts)                   # anchor the clock
 
     def say(self, text):
-        print("[%6.1f с] %s" % (self.ts, text))
+        print("[%6.1f s] %s" % (self.ts, text))
 
     def tick(self):
         self.ts += self.dt
         evs = self.h.update(self.ts)
         h = self.h
         if self.ground_check and not h.on_ground and h.z <= h.ground_z:
-            h.reached_surface()                # "игра" сообщает о касании земли
+            h.reached_surface()                # the "game" reports touching the ground
             evs += h.pop_events()
         for e in evs:
             if e.name == "moved":
@@ -118,7 +118,7 @@ class Sim(object):
 
 
 def cold_start(sim, piston=None):
-    """Полный запуск по чек-листу до 100% оборотов ротора. Возвращает True при успехе."""
+    """Full start-up by the checklist up to 100% rotor rpm. Returns True on success."""
     h = sim.h
     if piston is None:
         piston = h.cfg.has_clutch
@@ -130,7 +130,7 @@ def cold_start(sim, piston=None):
         h.switch("fuel_pump", True)
     h.switch("avionics", True)
     sim.run(1.0)
-    h.button("starter")                        # нажать и не отпускать: сам отсечётся
+    h.button("starter")                        # press and do not release: it cuts out by itself
     if not sim.until(lambda: h.engine.state == "running", 60.0):
         return False
     h.switch("generator", True)
@@ -151,13 +151,13 @@ def clamp(v, lo, hi):
 
 
 class Autopilot(object):
-    """Простой «пилот»: высота, курс, скорость вперёд. Работает в любых единицах API."""
+    """A simple "pilot": altitude, heading, forward speed. Works in any API units."""
 
     def __init__(self, sim):
         self.sim = sim
-        self.alt = 0.0          # м
+        self.alt = 0.0          # m
         self.hdg = 0.0
-        self.speed = 0.0        # м/с вперёд
+        self.speed = 0.0        # m/s forward
         self.base = 0.55
         self.enabled = True
 

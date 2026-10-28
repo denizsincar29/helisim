@@ -1,9 +1,9 @@
-"""Сценарные проверки: отказы, столкновения, отклонённые команды."""
+"""Shared helpers for the tests and examples: put a helicopter into a running state in the air."""
 from helisim import Helicopter
 
 
 def airborne(preset="medium_turbine", alt=100.0, speed=0.0):
-    """Быстро поднять вертолёт в воздух в рабочем состоянии (для тестов)."""
+    """Quickly create a helicopter that is already airborne with a running engine (for tests)."""
     h = Helicopter(preset, timestamp=0.0, z=alt)
     h.ground_z = 0.0
     h.on_ground = False
@@ -40,7 +40,6 @@ def names(evs, skip=("rotor_rpm_changed", "engine_rpm_changed", "torque_changed"
     return [e for e in evs if e.name not in skip]
 
 
-
 def airborne_like(h, alt):
-    g = airborne(h.cfg.name, alt=alt)
-    return g
+    """Same preset as helicopter h, but airborne at altitude alt."""
+    return airborne(h.cfg.name, alt=alt)

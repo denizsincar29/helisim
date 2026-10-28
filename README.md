@@ -1,25 +1,29 @@
 # helisim
 
-Реалистичная модель полёта вертолёта без графики и звука. Прототип на Python, потом переписывается на NVGT.
-Вертолёт ничего не знает о карте: игра командует органами управления, раз в тик вызывает `update(время)`,
-получает события и сообщает вертолёту о столкновениях.
+A realistic helicopter flight model with no graphics and no sound. It is a Python prototype that is meant to be
+ported to NVGT. The helicopter knows nothing about your map: the game operates the controls, calls
+`update(time)` every tick, receives events, and reports collisions back to the helicopter.
 
-Нужен Python 3.8 или новее, внешних зависимостей нет.
+Requires Python 3.8 or newer. No external dependencies.
 
-## Что внутри
+Russian copy of this file: [README.ru.md](README.ru.md).
 
-- `helisim.py` — сам модуль, один файл.
-- `README.md` — этот файл. `DESIGN.md` — подробности модели, список событий, тюнинг, перенос на NVGT.
-- `examples/` — пять запускаемых примеров, вывод чистым текстом по строке на событие.
-- `demo_flight.py` — полный полёт «пилотом-автоматом»: запуск, взлёт, висение, полёт, разворот, посадка, останов.
-- `test_scenarios.py`, `test_features.py` — проверки отказов, столкновений, пауз, единиц. `measure.py` — замер характеристик пресетов.
+## What is in the repository
 
-## Быстрый старт
+- `helisim.py` - the module itself, a single file.
+- `README.md` - this file. `DESIGN.md` - details of the model, the event list, tuning, notes for the NVGT port.
+- `examples/` - five runnable examples. The output is plain text, one line per event, so it is friendly to screen readers.
+- `demo_flight.py` - a complete flight by an automatic pilot: start-up, takeoff, hover, flight, turn, landing, shutdown.
+- `test_scenarios.py`, `test_features.py` - scenario scripts for failures, collisions, pauses and units. They print
+  what happens; they do not use assertions. `testutil.py` holds their shared helpers.
+- `measure.py` - measures the characteristics of every preset.
+
+## Quick start
 
 ```python
 from helisim import Helicopter
 
-heli = Helicopter("medium_turbine", timestamp=0.0)   # или "light_piston", "heavy_twin"
+heli = Helicopter("medium_turbine", timestamp=0.0)   # or "light_piston", "heavy_twin"
 heli.switch("battery", True)
 heli.switch("fuel_valve", True)
 heli.switch("fuel_pump", True)
@@ -28,108 +32,108 @@ heli.button("starter")
 t = 0.0
 while True:
     t += 0.05
-    for e in heli.update(t):           # список событий за этот тик
+    for e in heli.update(t):           # the list of events produced during this tick
         print(e.name, e.data)
 ```
 
-Часы: `update(timestamp)` принимает секунды (float). Без аргумента берёт системный монотонный таймер.
+Clock: `update(timestamp)` takes seconds as a float. Without an argument it uses the system monotonic timer.
 
-## Порядок запуска
+## Start-up checklist
 
-Турбина (`medium_turbine`, `heavy_twin`):
+Turbine helicopters (`medium_turbine`, `heavy_twin`):
 
-1. `switch("battery", True)` — питание. Без него стартёр отклоняется с причиной `no_electric_power`.
-2. `switch("fuel_valve", True)` — топливный кран.
-3. `switch("fuel_pump", True)` — подкачка, нужна для запуска.
-4. `button("starter")` — нажать и не отпускать, стартёр сам отсечётся по оборотам. Газ при запуске держать на нуле.
-5. Ждать событие `engine_started`.
+1. `switch("battery", True)` - power. Without it the starter is rejected with the reason `no_electric_power`.
+2. `switch("fuel_valve", True)` - the fuel valve.
+3. `switch("fuel_pump", True)` - the boost pump, required to start.
+4. `button("starter")` - press it and do not release it; the starter cuts out by itself at the right rpm. Keep the throttle at zero during the start.
+5. Wait for the `engine_started` event.
 6. `switch("generator", True)`.
-7. `switch("rotor_brake", False)` — на стоянке тормоз ротора включён.
-8. `turn("throttle", 1.0)` и ждать обороты ротора около 98 процентов.
-9. Плавно поднимать `collective`. Вертолёт оторвётся сам, придёт событие `liftoff`.
+7. `switch("rotor_brake", False)` - the rotor brake is on when the helicopter is parked.
+8. `turn("throttle", 1.0)` and wait until the rotor rpm is about 98 percent.
+9. Raise `collective` smoothly. The helicopter lifts off by itself and you get a `liftoff` event.
 
-Поршневой (`light_piston`): вместо насоса включить `ignition`, а после снятия тормоза включить `clutch`.
+Piston helicopter (`light_piston`): switch on `ignition` instead of the pump, and switch on `clutch` after releasing the brake.
 
-Останов: шаг вниз, газ на ноль, остыть, `button("engine_stop")`, `rotor_brake` включить.
+Shutdown: collective down, throttle to zero, let the engine cool, `button("engine_stop")`, rotor brake on.
 
-## Органы управления
+## Controls
 
-- Тумблеры, `switch(имя, True/False)` или `toggle(имя)`: battery, generator, fuel_pump, fuel_valve, ignition (только поршневой), avionics, nav_lights, landing_light, anti_collision, rotor_brake, clutch (только поршневой), sas.
-- Кнопки, `press`, `release` или `button(имя, hold=секунды)`: starter, engine_stop.
-- Оси, `turn(имя, значение)` или `step(имя, дельта)`:
-  collective от 0 до 1 (шаг-газ), throttle от 0 до 1 (коррекция газа), cyclic_roll от -1 до 1 (вправо плюс), cyclic_pitch от -1 до 1 (вперёд плюс), pedals от -1 до 1 (правая плюс).
-- `joystick(roll, pitch)` — циклик одним вызовом. `center()` — циклик и педали в ноль.
-- Рычаги идут к заданному значению с ограниченной скоростью, как рука пилота. Реальное положение в `get_state()["controls"]`, заданное в `["targets"]`.
-- `controls_info()` — список всех органов с русскими подписями, чтобы строить меню.
-- Невозможная команда возвращает False и даёт событие `command_rejected` с причиной.
+- Toggle switches, `switch(name, True/False)` or `toggle(name)`: battery, generator, fuel_pump, fuel_valve, ignition (piston only), avionics, nav_lights, landing_light, anti_collision, rotor_brake, clutch (piston only), sas.
+- Push buttons, `press`, `release` or `button(name, hold=seconds)`: starter, engine_stop.
+- Axes, `turn(name, value)` or `step(name, delta)`:
+  collective from 0 to 1, throttle from 0 to 1 (twist grip), cyclic_roll from -1 to 1 (right is positive), cyclic_pitch from -1 to 1 (forward is positive), pedals from -1 to 1 (right is positive).
+- `joystick(roll, pitch)` sets the cyclic in one call. `center()` centers the cyclic and the pedals.
+- Levers move towards the requested value at a limited speed, like a pilot's hand. The real position is in `get_state()["controls"]`, the requested one in `["targets"]`.
+- `controls_info()` returns all controls with readable labels, so you can build menus from it.
+- An impossible command returns False and produces a `command_rejected` event with a reason.
 
-## События
+## Events
 
-`update()` возвращает список `Event` с полями `t`, `name`, `data`. Основные:
+`update()` returns a list of `Event` objects with the fields `t`, `name` and `data`. The main ones:
 
-- Двигатель и системы: `engine_state`, `engine_started`, `starter_cutout`, `hot_start`, `start_failed`, `engine_flameout`, `engine_failure`, `fuel_exhausted`, `bus_power_changed`, `switch`, `button`.
-- Полёт: `liftoff`, `touchdown`, `bump`, `crashed`, `moved`, `heading_changed`, `attitude_changed`, `speed_changed`, `vertical_speed_changed`, `vertical_trend_changed`, `altitude_changed`, `rotor_rpm_changed`, `engine_rpm_changed`, `torque_changed`, `fuel_changed`.
-- Предупреждения: `warning` с полями `id` и `active`. Идентификаторы: low_rotor_rpm, high_rotor_rpm, overtorque, overtemp, low_fuel, low_battery, vortex_ring, retreating_blade_stall, overspeed, rotor_brake_on, hard_landing.
-- Служебные: `paused`, `resumed`, `map_edge`, `command_rejected`.
+- Engine and systems: `engine_state`, `engine_started`, `starter_cutout`, `hot_start`, `start_failed`, `engine_flameout`, `engine_failure`, `fuel_exhausted`, `bus_power_changed`, `switch`, `button`.
+- Flight: `liftoff`, `touchdown`, `bump`, `crashed`, `moved`, `heading_changed`, `attitude_changed`, `speed_changed`, `vertical_speed_changed`, `vertical_trend_changed`, `altitude_changed`, `rotor_rpm_changed`, `engine_rpm_changed`, `torque_changed`, `fuel_changed`.
+- Warnings: `warning` with the fields `id` and `active`. The ids are low_rotor_rpm, high_rotor_rpm, overtorque, overtemp, low_fuel, low_battery, vortex_ring, retreating_blade_stall, overspeed, rotor_brake_on, hard_landing.
+- Service: `paused`, `resumed`, `map_edge`, `command_rejected`.
 
-События об изменениях приходят по порогам из конфига, чтобы не спамить. Снимок всего состояния для звука и озвучки по запросу — `get_state()`.
+Change events are sent only when a value moves by a threshold from the config, so they do not flood you. A snapshot of the whole state, for sound and speech, is available at any time from `get_state()`.
 
-## Что делает игра
+## What the game does
 
-Столкновения сообщает игра, вертолёт решает исход по скорости и углам: касание, лёгкий удар или `crashed=True` (причина в `crash_reason`).
+The game reports collisions. The helicopter decides the outcome from speeds and angles: a touchdown, a light bump, or `crashed=True` (the cause is in `crash_reason`).
 
-- `reached_surface(ground_z)` — коснулись земли. Мягко: `touchdown`. Жёстко или на большой скорости или с большим креном: `crashed`.
-- `reached_wall(nx, ny, part)` — стена. `part`: fuselage, rotor, tail. Нормаль смотрит от стены к вертолёту.
+- `reached_surface(ground_z)` - touched the ground. Gentle contact gives `touchdown`. A hard, fast or tilted contact gives `crashed`.
+- `reached_wall(nx, ny, part)` - a wall. `part` is fuselage, rotor or tail. The normal points from the wall towards the helicopter.
 - `reached_ceiling()`, `reached_water()`, `surface_lost()`, `set_ground_level(z)`.
-- `fail_engine(причина)` — отказ двигателя извне, дальше авторотация.
-- `repair()` — вернуть после крушения.
+- `fail_engine(reason)` - an engine failure from outside; an autorotation follows.
+- `repair()` - restore the helicopter after a crash.
 
-Позиция: по умолчанию вертолёт не знает координат карты. Он шлёт событие `moved` со смещением с прошлого отчёта:
-`dx`, `dy`, `dz`, `distance`, `bearing` (направление движения, 0 это север), `relative_bearing` (относительно носа), `elevation`, `heading`.
-Игра сама двигает игрока. Высота над поверхностью вертолёту нужна для расчёта воздуха, её он ведёт сам.
+Position: by default the helicopter does not know map coordinates. It sends a `moved` event with the displacement since the previous report:
+`dx`, `dy`, `dz`, `distance`, `bearing` (the direction of motion, 0 is north), `relative_bearing` (relative to the nose), `elevation` and `heading`.
+The game moves the player itself. The helicopter does keep its own height above the surface, because it needs it to compute the air.
 
-Край карты: `reached_map_edge()`. По умолчанию физика не меняется, приходит только событие `map_edge`, а игра сама меняет карту и позицию. Режим `block` гасит скорость в сторону края.
+Map edge: `reached_map_edge()`. By default physics does not change and only a `map_edge` event is emitted; the game switches the map and position itself. The `block` mode cancels the speed towards the edge.
 
-Пауза: `pause("причина")` и `resume()` замораживают вертолёт, время паузы не засчитывается. Нужно при перезагрузке карты и событиях игры, особенно с системным таймером.
+Pause: `pause("reason")` and `resume()` freeze the helicopter, and the paused time does not count. Use them when a map reloads or a game event takes over, especially when you use the system timer.
 
-Единицы: внутри метры. `imperial_units=True` переключает вход и выход на футы и фут/с, масса и топливо остаются в килограммах. Свойства `heli.x`, `heli.z` внутренние и всегда в метрах, для игры берите `get_state()` и события.
+Units: meters inside. `imperial_units=True` switches the API input and output to feet and ft/s. Mass and fuel stay in kilograms. The attributes `heli.x`, `heli.z` and so on are internal and always in meters; the game should read `get_state()` and the events instead.
 
-## Пресеты и настройка
+## Presets and configuration
 
-- `light_piston` — лёгкий поршневой, как Robinson R22. Низкая инерция ротора, ручное сцепление.
-- `medium_turbine` — средняя турбина, как Bell 206.
-- `medium_turbine_agile` — то же, но с бодрым набором высоты.
-- `heavy_twin` — тяжёлый двухдвигательный, как Ми-8, винт вращается по часовой.
+- `light_piston` - a light piston helicopter, similar to a Robinson R22. Low rotor inertia, a manual clutch.
+- `medium_turbine` - a medium turbine helicopter, similar to a Bell 206.
+- `medium_turbine_agile` - the same, with a livelier climb.
+- `heavy_twin` - a heavy twin-engine helicopter, similar to a Mi-8; the rotor turns clockwise.
 
-Любой параметр можно переопределить: `HelicopterConfig("medium_turbine", mtow=1600, idle_nr=0.6)`.
-Свой пресет — новая запись в словаре `PRESETS`, только отличия от значений по умолчанию (пример 4).
-Режим циклика: `cyclic_mode="attitude"` (стик задаёт угол, удобно с клавиатуры) или `"rate"` (стик задаёт скорость вращения, ближе к реальности).
-После ручной правки параметров вызовите `config.recalc()`.
+Any parameter can be overridden: `HelicopterConfig("medium_turbine", mtow=1600, idle_nr=0.6)`.
+A preset of your own is a new entry in the `PRESETS` dictionary that lists only the differences from the defaults (example 4).
+Cyclic mode: `cyclic_mode="attitude"` (the stick sets an angle, convenient on a keyboard) or `"rate"` (the stick sets a rotation rate, closer to reality).
+After changing parameters by hand, call `config.recalc()`.
 
-## Примеры
+## Examples
 
-Запускать из папки `examples`:
+Run them from the `examples` folder:
 
-- `python3 01_cold_start.py [пресет]` — запуск по чек-листу шаг за шагом.
-- `python3 02_game_loop.py` — скелет игры: футы, события `moved`, столкновения, край карты, пауза на загрузку.
-- `python3 03_failures.py [пресет]` — отказ двигателя и кончившееся топливо, авторотация с выравниванием.
-- `python3 04_custom_preset.py` — свои параметры и пресет, влияние высоты и загрузки на висение.
-- `python3 05_keyboard.py` — раскладка клавиш и обработчик нажатий.
+- `python3 01_cold_start.py [preset]` - a start-up by the checklist, step by step.
+- `python3 02_game_loop.py` - a skeleton of a game: feet, `moved` events, collisions, the map edge, a pause for a map load.
+- `python3 03_failures.py [preset]` - an engine failure and running out of fuel, with an autorotation and a flare.
+- `python3 04_custom_preset.py` - your own parameters and preset, and how altitude and load change the hover.
+- `python3 05_keyboard.py` - a key layout and a key handler.
 
-## Проверки
+## Running the checks
 
-- `python3 test_scenarios.py` — отказы, столкновения, отклонённые команды.
-- `python3 test_features.py` — `moved`, пауза, край карты, футы.
-- `python3 demo_flight.py light_piston` — полёт целиком, пресет по выбору.
-- `python3 measure.py` — шаг и мощность на висении, скорость на полном стике, подъём, педали, потолок.
+- `python3 test_scenarios.py` - failures, collisions, rejected commands.
+- `python3 test_features.py` - `moved`, pause, map edge, feet.
+- `python3 demo_flight.py light_piston` - a whole flight; pick the preset you like.
+- `python3 measure.py` - hover collective and power, speed at full stick, climb, pedals, hover ceiling.
 
-## Перенос на NVGT
+## Porting to NVGT
 
-Код плоский: простые классы, словари, float, без dataclass, генераторов и лямбд. `Event.data` это словарь строка в значение, `update()` возвращает массив событий. `time.monotonic()` заменить на `ticks() / 1000.0`. Конструктор конфига с переопределениями заменить на словарь.
+The code is flat: plain classes, dictionaries, floats, with no dataclasses, generators or lambdas. `Event.data` is a dictionary from string to value, and `update()` returns an array of events. Replace `time.monotonic()` with `ticks() / 1000.0`. Replace the config constructor that takes overrides with a dictionary of overrides.
 
-## Ограничения
+## Limitations
 
-- Числа подобраны под поведение прототипов, по лётным руководствам не сверялись.
-- Ветра нет, но скорость уже считается относительно воздуха, поле `wind` и метод `set_wind` готовы.
-- Нет динамического опрокидывания на земле, отказа хвостового винта, поломок по частям, температуры воздуха.
-- В авторотации реактивного момента нет, а хвостовой винт толкает: курс надо держать педалями. Это сделано намеренно.
+- The numbers were tuned to resemble the behavior of the real prototypes. They were not checked against flight manuals.
+- There is no wind yet, but speeds are already computed relative to the air, and the `wind` field and the `set_wind` method are ready.
+- Not modelled: dynamic rollover on the ground, a tail rotor failure, damage to individual parts, air temperature.
+- In an autorotation there is no torque, but the tail rotor keeps pushing, so the heading must be held with the pedals. This is intentional.

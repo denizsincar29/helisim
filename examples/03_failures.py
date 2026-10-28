@@ -1,29 +1,29 @@
-"""Пример 3: отказ двигателя в полёте и авторотация; топливо кончилось.
-Показывает, чего ждать от пилота: держать обороты ротора шагом, держать курс педалями
-(в авторотации реактивного момента нет, хвостовой винт продолжает толкать), выровнять
-вертолёт у земли и притереть шагом перед самой землёй.
-Запуск: python3 03_failures.py [light_piston|medium_turbine|heavy_twin]"""
+"""Example 3: an engine failure in flight and an autorotation; running out of fuel.
+Shows what is expected of the pilot: hold rotor rpm with the collective, hold the heading with the pedals
+(there is no torque in an autorotation, but the tail rotor keeps pushing), flare near the ground,
+and cushion with the collective just before touchdown.
+Run: python3 03_failures.py [light_piston|medium_turbine|heavy_twin]"""
 import sys
 from common import Helicopter, Sim, Autopilot, cold_start, clamp
 
-LOW_FUEL = {"light_piston": 0.6}        # кг: столько, чтобы топливо кончилось за минуты
-FLARE_H = 60.0      # м: с этой высоты гасим скорость
-CUSHION_H = 30.0    # м: с этой высоты управляем вертикальной скоростью шагом
+LOW_FUEL = {"light_piston": 0.6}        # kg: so little that the fuel runs out within minutes
+FLARE_H = 60.0      # m: from this height we bleed off speed
+CUSHION_H = 30.0    # m: from this height we control the sink rate with the collective
 
 
 def autorotate(h, hdg):
-    """Один шаг закона пилота в авторотации. h - вертолёт, hdg - курс, который держим."""
+    """One step of the autorotation pilot law. h is the helicopter, hdg is the heading to hold."""
     s = h.get_state()
     agl = s["agl"]
     nr = h.nr
     gs = s["ground_speed"]
-    base = clamp(0.5 + 3.0 * (nr - 1.0), 0.4, 1.0)         # шаг держит обороты около 100%
+    base = clamp(0.5 + 3.0 * (nr - 1.0), 0.4, 1.0)         # the collective holds rpm near 100%
     if agl > FLARE_H:
         coll, cyc = base, 0.0
     else:
-        v_target = 4.0 + 0.1 * agl                          # желаемая путевая скорость на этой высоте
-        cyc = clamp(-0.05 * (gs - v_target), -0.9, 0.3)     # быстрее нужного: ручку на себя
-        if agl < CUSHION_H and (nr > 0.8 or agl < 6.0):     # у земли тянем шаг независимо от оборотов
+        v_target = 4.0 + 0.1 * agl                          # the desired ground speed at this height
+        cyc = clamp(-0.05 * (gs - v_target), -0.9, 0.3)     # faster than wanted: stick back
+        if agl < CUSHION_H and (nr > 0.8 or agl < 6.0):     # near the ground we pull collective regardless of rpm
             vz_target = -(0.5 + 0.25 * agl)
             coll = clamp(0.50 + 0.12 * (vz_target - s["vz"]), 0.0, 1.0)
         else:
@@ -44,16 +44,16 @@ def fly_and_fail(preset, title, how):
     pilot.speed = 25.0
     if how == "engine":
         pilot.run(40.0)
-        print("--- Игра сообщает: отказ двигателя (птица)")
+        print("--- The game reports: engine failure (bird strike)")
         heli.fail_engine("bird strike")
     else:
-        for i in range(int(300.0 / sim.dt)):         # летим, пока не кончится топливо
+        for i in range(int(300.0 / sim.dt)):         # fly until the fuel runs out
             if heli.engine.state != "running":
                 break
             pilot.step()
             sim.tick()
     hdg = heli.get_state()["heading"]
-    print("--- Авторотация")
+    print("--- Autorotation")
     for i in range(int(120.0 / sim.dt)):
         if heli.on_ground or heli.crashed:
             break
@@ -61,11 +61,11 @@ def fly_and_fail(preset, title, how):
         sim.tick()
     s = heli.get_state()
     if s["crashed"]:
-        print("Итог: разбились,", s["crash_reason"])
+        print("Result: crashed,", s["crash_reason"])
     else:
-        print("Итог: посадка, остаточная скорость по земле %.1f м/с, обороты %.0f%%" % (s["ground_speed"], s["nr_pct"]))
+        print("Result: landed, remaining ground speed %.1f m/s, rotor rpm %.0f%%" % (s["ground_speed"], s["nr_pct"]))
 
 
 preset = sys.argv[1] if len(sys.argv) > 1 else "medium_turbine"
-fly_and_fail(preset, "Отказ двигателя на высоте около 100 м", "engine")
-fly_and_fail(preset, "Топливо кончилось в полёте", "fuel")
+fly_and_fail(preset, "Engine failure at about 100 m", "engine")
+fly_and_fail(preset, "Out of fuel in flight", "fuel")

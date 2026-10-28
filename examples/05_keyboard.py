@@ -1,7 +1,7 @@
-"""Пример 5: управление с клавиатуры. Раскладка и обработчик клавиш; нажатия «проигрываются» по сценарию.
-Тумблеры - по нажатию. Рычаги (шаг-газ, газ) двигаются шагом и остаются там, где оставили.
-Циклик и педали - пока клавиша зажата, пружина возвращает в центр при отпускании.
-Запуск: python3 05_keyboard.py"""
+"""Example 5: keyboard control. A key layout and a key handler; the key presses are "played" from a script.
+Toggles act on key press. Levers (collective, throttle) move in steps and stay where they were left.
+Cyclic and pedals act while the key is held; a spring returns them to center on release.
+Run: python3 05_keyboard.py"""
 from common import Helicopter, Sim, SWITCH_INFO, phrase
 
 TOGGLES = {"b": "battery", "f": "fuel_valve", "p": "fuel_pump", "m": "ignition", "g": "generator",
@@ -33,22 +33,22 @@ class Keyboard(object):
 
     def up(self, key):
         if key in SPRING:
-            self.h.turn(SPRING[key][0], 0.0)      # пружина: ручка/педали в центр
+            self.h.turn(SPRING[key][0], 0.0)      # spring: stick/pedals back to center
 
 
 heli = Helicopter("medium_turbine", timestamp=0.0)
 sim = Sim(heli)
 kb = Keyboard(heli)
 
-# сценарий: (время, действие, клавиша)
+# script: (time, action, key)
 script = [
-    (0.5, "down", "r"),      # тормоз ротора: он включён на стоянке, выключаем
+    (0.5, "down", "r"),      # rotor brake: it is on when parked, so switch it off
     (1.0, "down", "b"), (1.5, "down", "f"), (2.0, "down", "p"),
-    (3.0, "down", "s"),                          # стартёр: нажать и не отпускать
+    (3.0, "down", "s"),                          # starter: press and do not release
     (25.0, "down", "g"),
-    (27.0, "down", "t"), (27.2, "down", "t"), (27.4, "down", "t"), (27.6, "down", "t"),  # газ до упора
+    (27.0, "down", "t"), (27.2, "down", "t"), (27.4, "down", "t"), (27.6, "down", "t"),  # throttle all the way up
 ]
-# после выхода на обороты - шаг вверх шажками, потом зажать "вперёд" на 2 секунды
+# after the rpm is up: collective in small steps, then hold "forward" for 2 seconds
 for i in range(14):
     script.append((50.0 + i * 0.4, "down", "pageup"))
 script += [(60.0, "down", "up"), (62.0, "up", "up"),
@@ -59,7 +59,7 @@ i = 0
 while sim.ts < 75.0 and not heli.crashed:
     while i < len(script) and script[i][0] <= sim.ts:
         t, what, key = script[i]
-        sim.say("Клавиша %s: %s" % (key, "нажата" if what == "down" else "отпущена"))
+        sim.say("Key %s: %s" % (key, "pressed" if what == "down" else "released"))
         if what == "down":
             kb.down(key)
         else:
@@ -68,5 +68,5 @@ while sim.ts < 75.0 and not heli.crashed:
     sim.tick()
 
 s = heli.get_state()
-print("Итог: на земле=%s, высота %.1f м, скорость %.1f м/с, обороты ротора %.0f%%, шаг %.2f" %
+print("Result: on the ground=%s, height %.1f m, speed %.1f m/s, rotor rpm %.0f%%, collective %.2f" %
       (s["on_ground"], s["agl"], s["ground_speed"], s["nr_pct"], s["controls"]["collective"]))

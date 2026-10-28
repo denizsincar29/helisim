@@ -1,21 +1,21 @@
 """
-helisim.py - реалистичный симулятор вертолёта без графики и без звука.
+helisim.py - a realistic helicopter flight model with no graphics and no sound.
 
-Контракт с игрой:
-  heli = Helicopter(config)                 # config: пресет, имя пресета или dict-переопределения
-  heli.switch("battery", True)              # тумблеры
-  heli.button("starter")                    # кнопки
-  heli.turn("collective", 0.6)              # оси (цель; реальное положение идёт с задержкой, как рука пилота)
-  events = heli.update(timestamp_sec)       # раз в X секунд; возвращает список Event
-  heli.reached_surface(ground_z)            # игра сообщает о столкновениях
+Contract with the game:
+  heli = Helicopter(config)                 # config: preset name, HelicopterConfig, or None
+  heli.switch("battery", True)              # toggle switches
+  heli.button("starter")                    # push buttons
+  heli.turn("collective", 0.6)              # axes (the target; the real position follows with a delay, like a pilot's hand)
+  events = heli.update(timestamp_sec)       # every X seconds; returns a list of Event
+  heli.reached_surface(ground_z)            # the game reports collisions
   heli.reached_wall(nx, ny, part)
-  heli.get_state()                          # снимок для звука/озвучки
+  heli.get_state()                          # snapshot for sound / speech
 
-Единицы: метры, м/с, градусы, кг, Ньютоны, Вт. Оси: x - восток, y - север, z - вверх.
-Курс: 0 = север, по часовой. Тангаж: + нос вверх. Крен: + вправо.
+Units: meters, m/s, degrees, kg, Newtons, Watts. Axes: x - east, y - north, z - up.
+Heading: 0 = north, clockwise. Pitch: + nose up. Roll: + right.
 
-Код специально плоский (простые классы, dict, float, без dataclass/генераторов/лямбд),
-чтобы переписывать на NVGT/AngelScript почти построчно.
+The code is deliberately flat (plain classes, dict, float; no dataclasses/generators/lambdas)
+so that it can be ported to NVGT/AngelScript almost line by line.
 """
 import math
 import time
@@ -23,9 +23,9 @@ import time
 G = 9.80665
 RHO0 = 1.225
 DEG = math.pi / 180.0
-FT = 3.280839895                       # футов в метре
+FT = 3.280839895                       # feet per meter
 
-# ключи данных событий, значения которых пересчитываются при imperial_units
+# event data keys whose values are converted when imperial_units is on
 _LEN_KEYS = ("x", "y", "z", "agl", "dx", "dy", "dz", "distance")
 _SPEED_KEYS = ("ground_speed", "airspeed", "vz", "speed", "sink", "vertical_speed", "vx", "vy")
 
@@ -39,7 +39,7 @@ def clamp(v, lo, hi):
 
 
 def density_ratio(alt):
-    """Отношение плотности воздуха к уровню моря (ISA)."""
+    """Air density relative to sea level (ISA)."""
     a = clamp(alt, -400.0, 11000.0)
     return (1.0 - 2.2558e-5 * a) ** 4.2559
 
@@ -49,63 +49,63 @@ def angle_diff(a, b):
     return d
 
 
-# ---------------------------------------------------------------- конфигурация
+# ---------------------------------------------------------------- configuration
 
 _DEFAULTS = dict(
     name="medium_turbine",
     engine_type="turbine",         # "turbine" | "piston"
-    has_clutch=False,              # поршневые: сцепление нужно включать вручную
-    needs_ignition=False,          # поршневые: магнето (тумблер ignition)
-    start_needs_pump=True,         # турбина: для запуска нужен подкачивающий насос
+    has_clutch=False,              # piston engines: the clutch must be engaged manually
+    needs_ignition=False,          # piston engines: magneto (the ignition switch)
+    start_needs_pump=True,         # turbine: a boost pump is needed to start
     rotor_diameter=10.2,
-    rotor_rpm=394.0,               # номинальные обороты НВ
-    rotor_dir=1,                   # +1 против часовой (нос от реактивного момента вправо), -1 по часовой
-    rotor_inertia=1200.0,          # кг*м^2
+    rotor_rpm=394.0,               # nominal main rotor rpm
+    rotor_dir=1,                   # +1 counter-clockwise (torque yaws the nose right), -1 clockwise
+    rotor_inertia=1200.0,          # kg*m^2
     yaw_inertia=2200.0,
     empty_mass=840.0, mtow=1450.0, payload_kg=80.0, fuel_capacity=280.0,
     max_power_kw=313.0, max_cont_power_kw=270.0, power_lapse=0.85,
     idle_n1=0.62, idle_power_frac=0.12, idle_nr=0.55,
-    thrust_ratio=1.55,             # макс. тяга НВ / (mtow*g) на уровне моря, 100% оборотов
-    min_coll=0.04,                 # доля тяги при шаге на нуле
-    heave_damp=4.0,                # приток при подъёме снижает угол атаки лопастей (демпфирование вертикальной скорости)
-    drivetrain_eff=0.85,           # КПД трансмиссии/привода агрегатов: вал двигателя -> ротор
+    thrust_ratio=1.55,             # max main rotor thrust / (mtow*g) at sea level, 100% rpm
+    min_coll=0.04,                 # fraction of max thrust at zero collective
+    heave_damp=4.0,                # inflow in a climb reduces blade angle of attack (damps vertical speed)
+    drivetrain_eff=0.85,           # drivetrain/accessory efficiency: engine shaft -> rotor
     kappa=1.2, profile_power_kw=25.0, tail_power_frac=0.08, tail_k=1.2,
     gov_gain=40.0, brake_decel=0.08,
     yaw_damp=2.5, weathercock=3.0, max_yaw_rate=110.0,
     cda_h=1.25, cda_v=1.6, vne=62.0,
     sfc=0.33, idle_fuel_kgh=35.0, low_fuel_frac=0.15,
-    cyclic_mode="attitude",        # "attitude" (стик = угол) | "rate" (стик = скорость вращения)
+    cyclic_mode="attitude",        # "attitude" (stick = angle) | "rate" (stick = rotation rate)
     max_cmd_pitch=25.0, max_cmd_roll=30.0, max_pitch_rate=45.0, max_roll_rate=60.0,
     att_gain=2.5, att_tau=0.30, speed_instability=0.15,
-    # двигатель
+    # engine
     light_off_n1=0.15, starter_rate=0.035, starter_cutout=0.45, self_sustain_n1=0.35,
     start_accel=0.045, n1_tau=2.5, n1_decay=0.04, start_throttle_max=0.15,
     egt_limit=810.0,
-    # электрика
+    # electrics
     battery_ah=17.0, gen_amps=100.0, starter_amps=150.0, starter_min_v=19.0, gen_min_n1=0.6,
-    # земля и разрушения
+    # ground and damage
     ground_mu=0.4, ground_effect=True,
     crash_sink=5.5, hard_sink=3.0, crash_tilt=22.0, crash_ground_speed=10.0, wall_crash_speed=4.0,
     nr_low=0.94, nr_high=1.07, nr_overspeed=1.22,
-    # скорости приводов органов управления (доля хода в секунду)
+    # control actuator speeds (fraction of travel per second)
     collective_rate=0.6, throttle_rate=0.35, cyclic_rate=2.5, pedal_rate=2.5,
-    # пороги событий об изменении параметров
+    # thresholds for change events
     rpm_step=0.02, n1_step=0.02, torque_step=5.0, alt_step=1.0, pos_step=2.0,
     heading_step=5.0, att_step=2.0, speed_step=2.0, vs_step=1.0, fuel_step_frac=0.02,
     max_substep=0.02,
-    position_mode="delta",         # "delta": вертолёт не знает карту, шлёт событие moved (смещение);
-                                   # "absolute": ещё и position_changed + x,y в get_state()
-    move_step=0.0,                 # м: копить смещение до этого порога (0 = событие moved в каждом update при движении)
-    map_edge_mode="pass",          # "pass": край карты не влияет на физику; "block": гасит скорость в сторону края
-    max_dt=1.0,                    # защита от скачка времени (с); для пауз используйте pause()/resume()
-    imperial_units=False,          # True: на границе API футы и фут/с (внутри всегда СИ)
-    auto_ground=False,             # True: вертолёт сам ловит z<=ground_z (для тестов без игры)
+    position_mode="delta",         # "delta": the helicopter does not know the map and sends "moved" events (displacement);
+                                   # "absolute": also position_changed + x,y in get_state()
+    move_step=0.0,                 # m: accumulate displacement until this threshold (0 = a moved event on every update with motion)
+    map_edge_mode="pass",          # "pass": the map edge does not affect physics; "block": cancels speed towards the edge
+    max_dt=1.0,                    # protection against time jumps (s); use pause()/resume() for pauses
+    imperial_units=False,          # True: feet and ft/s at the API boundary (always SI inside)
+    auto_ground=False,             # True: the helicopter detects z<=ground_z itself (for tests without a game)
 )
 
 PRESETS = {
     "medium_turbine": dict(thrust_ratio=1.4, kappa=1.3, profile_power_kw=45.0, drivetrain_eff=0.82,
                            heave_damp=5.0),
-    "medium_turbine_agile": dict(name="medium_turbine_agile"),   # прежняя «бодрая» настройка: быстрый подъём
+    "medium_turbine_agile": dict(name="medium_turbine_agile"),   # the previous "lively" tuning: fast climb
     "light_piston": dict(
         name="light_piston", engine_type="piston", has_clutch=True, needs_ignition=True,
         start_needs_pump=False,
@@ -153,7 +153,7 @@ class HelicopterConfig(object):
         self.recalc()
 
     def recalc(self):
-        """Производные величины. Вызывать после ручного изменения параметров."""
+        """Derived values. Call after changing parameters by hand."""
         self.rotor_radius = self.rotor_diameter / 2.0
         self.area = math.pi * self.rotor_radius ** 2
         self.omega0 = self.rotor_rpm * 2.0 * math.pi / 60.0
@@ -161,7 +161,7 @@ class HelicopterConfig(object):
         self.max_power_w = self.max_power_kw * 1000.0
         self.max_cont_w = self.max_cont_power_kw * 1000.0
         self.profile_power_w = self.profile_power_kw * 1000.0
-        # опорный режим висения (85% mtow, уровень моря) -> нейтральная тяга хвостового винта
+        # reference hover (85% mtow, sea level) -> neutral tail rotor thrust
         t_h = 0.85 * self.mtow * G
         vh = math.sqrt(t_h / (2.0 * RHO0 * self.area))
         p_main = self.kappa * t_h * vh + self.profile_power_w
@@ -171,22 +171,22 @@ class HelicopterConfig(object):
         self.ke_scale = self.rotor_inertia * self.omega0 ** 2
 
 
-# ---------------------------------------------------------------- органы управления
+# ---------------------------------------------------------------- controls
 
 SWITCH_INFO = {
-    "battery": "Питание (master)", "generator": "Генератор", "fuel_pump": "Топливный насос",
-    "fuel_valve": "Топливный кран", "ignition": "Зажигание", "avionics": "Авионика",
-    "nav_lights": "Навигационные огни", "landing_light": "Посадочная фара",
-    "anti_collision": "Проблесковый маяк", "rotor_brake": "Тормоз ротора",
-    "clutch": "Сцепление", "sas": "Система стабилизации",
+    "battery": "Battery (master)", "generator": "Generator", "fuel_pump": "Fuel pump",
+    "fuel_valve": "Fuel valve", "ignition": "Ignition", "avionics": "Avionics",
+    "nav_lights": "Navigation lights", "landing_light": "Landing light",
+    "anti_collision": "Anti-collision beacon", "rotor_brake": "Rotor brake",
+    "clutch": "Clutch", "sas": "Stability augmentation system",
 }
-BUTTON_INFO = {"starter": "Стартёр", "engine_stop": "Останов двигателя"}
+BUTTON_INFO = {"starter": "Starter", "engine_stop": "Engine stop"}
 AXIS_INFO = {
-    "collective": (0.0, 1.0, "Шаг-газ (общий шаг)"),
-    "throttle": (0.0, 1.0, "Коррекция газа"),
-    "cyclic_roll": (-1.0, 1.0, "Циклический шаг: крен, вправо +"),
-    "cyclic_pitch": (-1.0, 1.0, "Циклический шаг: тангаж, вперёд +"),
-    "pedals": (-1.0, 1.0, "Педали, правая +"),
+    "collective": (0.0, 1.0, "Collective"),
+    "throttle": (0.0, 1.0, "Throttle (twist grip)"),
+    "cyclic_roll": (-1.0, 1.0, "Cyclic roll, right +"),
+    "cyclic_pitch": (-1.0, 1.0, "Cyclic pitch, forward +"),
+    "pedals": (-1.0, 1.0, "Pedals, right +"),
 }
 
 
@@ -200,7 +200,7 @@ class Event(object):
         return "[%7.2f] %s %s" % (self.t, self.name, self.data)
 
 
-# ---------------------------------------------------------------- электрика
+# ---------------------------------------------------------------- electrics
 
 class Electrical(object):
     def __init__(self, heli):
@@ -246,10 +246,10 @@ class Electrical(object):
             self.voltage = 0.0
 
 
-# ---------------------------------------------------------------- двигатель
+# ---------------------------------------------------------------- engine
 
 class Engine(object):
-    """Состояния: off, cranking, starting, running, shutdown, failed."""
+    """States: off, cranking, starting, running, shutdown, failed."""
 
     def __init__(self, heli):
         self.h = heli
@@ -282,7 +282,7 @@ class Engine(object):
         pump_ok = (not c.start_needs_pump) or (h.sw["fuel_pump"] and h.bus_power)
         st = self.state
 
-        # стартёр
+        # starter
         can_crank = (h.btn["starter"] and h.bus_power and h.elec.voltage >= c.starter_min_v
                      and st in ("off", "cranking", "starting") and self.n1 < c.starter_cutout)
         if h.btn["starter"] and self.n1 >= c.starter_cutout:
@@ -315,7 +315,7 @@ class Engine(object):
                 if can_crank:
                     rate += c.starter_rate
                 elif self.n1 < c.self_sustain_n1:
-                    rate = -c.n1_decay          # без стартёра ниже порога - не держит
+                    rate = -c.n1_decay          # without the starter, below the threshold it cannot sustain
                     if self.n1 <= c.light_off_n1 * 0.9:
                         h._ev("start_failed", {"reason": "hung_start"})
                         self.set_state("shutdown")
@@ -346,7 +346,7 @@ class Engine(object):
         if st != "running":
             h.btn["engine_stop"] = False
 
-        # температура
+        # temperature
         if self.state == "running":
             load = h.p_eng_w / max(c.max_power_w * c.drivetrain_eff, 1.0)
             egt_t = 15.0 + 300.0 * self.n1 + 450.0 * load
@@ -360,7 +360,7 @@ class Engine(object):
         if self.egt > c.egt_limit:
             self.health -= 0.01 * dt * (self.egt - c.egt_limit) / 50.0
 
-        # расход топлива
+        # fuel consumption
         flow = 0.0
         if self.state == "running":
             flow = c.idle_fuel_kgh / 3600.0 + c.sfc * (h.p_eng_w / c.drivetrain_eff / 1000.0) / 3600.0
@@ -378,13 +378,13 @@ class Engine(object):
             self.set_state("failed")
 
 
-# ---------------------------------------------------------------- вертолёт
+# ---------------------------------------------------------------- helicopter
 
 class Helicopter(object):
     def __init__(self, config=None, timestamp=None, x=0.0, y=0.0, z=0.0, heading=0.0,
                  fuel_kg=None, ground_z=None, imperial_units=None):
-        """x, y, z, ground_z - в единицах API (метры или футы, см. imperial_units).
-        Публичные атрибуты (self.x, self.z, self.vx ...) всегда в метрах; для игры - get_state() и события."""
+        """x, y, z, ground_z are in API units (meters or feet, see imperial_units).
+        Public attributes (self.x, self.z, self.vx ...) are always in meters; the game should use get_state() and events."""
         if config is None:
             config = HelicopterConfig()
         elif isinstance(config, str):
@@ -392,13 +392,13 @@ class Helicopter(object):
         self.cfg = config
         c = config
         self.imperial = c.imperial_units if imperial_units is None else bool(imperial_units)
-        self.lk = FT if self.imperial else 1.0         # единицы API на метр
+        self.lk = FT if self.imperial else 1.0         # API units per meter
         x = x / self.lk
         y = y / self.lk
         z = z / self.lk
         if ground_z is not None:
             ground_z = ground_z / self.lk
-        self.t = 0.0                       # время симуляции, с
+        self.t = 0.0                       # simulation time, s
         self.paused = False
         self._reanchor = False
         self._edge_t = -999.0
@@ -413,17 +413,17 @@ class Helicopter(object):
         self.heading = heading % 360.0
         self.pitch = 0.0
         self.roll = 0.0
-        self.q = 0.0                       # скорость тангажа, град/с (+ нос вверх)
-        self.p = 0.0                       # скорость крена
-        self.r = 0.0                       # скорость рыскания (+ вправо)
+        self.q = 0.0                       # pitch rate, deg/s (+ nose up)
+        self.p = 0.0                       # roll rate
+        self.r = 0.0                       # yaw rate (+ right)
         self.vx = 0.0
         self.vy = 0.0
         self.vz = 0.0
-        self.wind = [0.0, 0.0, 0.0]        # задел на будущее (востоко-северо-вверх, м/с)
+        self.wind = [0.0, 0.0, 0.0]        # reserved for the future (east, north, up; m/s)
         self.on_ground = True
         self.crashed = False
         self.crash_reason = ""
-        self.nr = 0.0                      # обороты НВ, доля от номинала
+        self.nr = 0.0                      # main rotor rpm, fraction of nominal
         self.p_eng_w = 0.0
         self.thrust = 0.0
         self.torque_pct = 0.0
@@ -440,7 +440,7 @@ class Helicopter(object):
         self.sw = {}
         for k in SWITCH_INFO:
             self.sw[k] = False
-        self.sw["rotor_brake"] = True      # стоянка: тормоз включён
+        self.sw["rotor_brake"] = True      # parked: the brake is on
         self.sw["sas"] = True
         self.btn = {"starter": False, "engine_stop": False}
         self._btn_timer = {}
@@ -454,9 +454,9 @@ class Helicopter(object):
         self._rep = {}
         self._reset_reports()
 
-    # ------------------------------------------------------------ события
+    # ------------------------------------------------------------ events
     def _out(self, data):
-        """Пересчёт длин и скоростей в единицы API (копия словаря)."""
+        """Convert lengths and speeds to API units (returns a copy of the dict)."""
         if self.lk == 1.0:
             return data
         d = dict(data)
@@ -473,7 +473,7 @@ class Helicopter(object):
             fn(e)
 
     def subscribe(self, name, fn):
-        """name = имя события или "*" для всех. Альтернатива: просто читать список из update()."""
+        """name is an event name or "*" for all of them. Alternative: just read the list returned by update()."""
         if name not in self._subs:
             self._subs[name] = []
         self._subs[name].append(fn)
@@ -488,7 +488,7 @@ class Helicopter(object):
             self.warn[wid] = active
             self._ev("warning", {"id": wid, "active": active})
 
-    # ------------------------------------------------------------ управление
+    # ------------------------------------------------------------ control
     def switch(self, name, on):
         if name not in self.sw:
             return self._reject(name, "unknown")
@@ -498,7 +498,7 @@ class Helicopter(object):
         if self.sw[name] != bool(on):
             self.sw[name] = bool(on)
             self._ev("switch", {"name": name, "on": bool(on)})
-            self.elec.step(0.0)             # питание шины доступно сразу, не ждёт следующего update()
+            self.elec.step(0.0)             # bus power is available immediately, it does not wait for the next update()
         return True
 
     def toggle(self, name):
@@ -529,15 +529,15 @@ class Helicopter(object):
             self._ev("button", {"name": name, "pressed": False})
 
     def button(self, name, hold=0.0):
-        """Нажать; hold>0 - отпустить через hold секунд симуляции.
-        Стартёр можно просто нажать и не отпускать - он сам отсечётся по оборотам."""
+        """Press; if hold>0, release after hold simulated seconds.
+        The starter can simply be pressed and never released - it cuts out by itself at the right rpm."""
         ok = self.press(name)
         if ok and hold > 0.0:
             self._btn_timer[name] = self.t + hold
         return ok
 
     def turn(self, name, value):
-        """Выставить ось (ручка/рычаг/педали). Реальное положение догоняет цель с конечной скоростью."""
+        """Set an axis (stick/lever/pedals). The real position follows the target at a finite speed."""
         if name not in AXIS_INFO:
             return self._reject(name, "unknown")
         lo = AXIS_INFO[name][0]
@@ -546,13 +546,13 @@ class Helicopter(object):
         return True
 
     def step(self, name, delta):
-        """Сдвинуть ось на delta (удобно для клавиатуры)."""
+        """Move an axis by delta (handy for keyboard control)."""
         if name not in AXIS_INFO:
             return self._reject(name, "unknown")
         return self.turn(name, self.axis_target[name] + delta)
 
     def joystick(self, roll, pitch):
-        """Циклик: roll + вправо, pitch + вперёд (нос вниз)."""
+        """Cyclic: roll + is right, pitch + is forward (nose down)."""
         self.turn("cyclic_roll", roll)
         self.turn("cyclic_pitch", pitch)
 
@@ -566,7 +566,7 @@ class Helicopter(object):
         return False
 
     def controls_info(self):
-        """Список органов для генерации меню/озвучки."""
+        """List of all controls, for building menus and speech."""
         out = []
         for k in SWITCH_INFO:
             if (k == "ignition" and not self.cfg.needs_ignition) or (k == "clutch" and not self.cfg.has_clutch):
@@ -579,14 +579,14 @@ class Helicopter(object):
                         "max": AXIS_INFO[k][1], "value": self.axis[k], "target": self.axis_target[k]})
         return out
 
-    # ------------------------------------------------------------ обновление
+    # ------------------------------------------------------------ update
     def update(self, timestamp=None):
         if timestamp is None:
             timestamp = time.monotonic()
         if self.paused:
-            return self.pop_events()        # время не идёт; команды ставятся в очередь событий
+            return self.pop_events()        # time does not run; commands only queue events
         if self._last_ts is None or self._reanchor:
-            self._last_ts = timestamp        # первый вызов или первый после resume: только привязка часов
+            self._last_ts = timestamp        # first call, or first after resume: only anchor the clock
             self._reanchor = False
             return self.pop_events()
         dt = timestamp - self._last_ts
@@ -594,7 +594,7 @@ class Helicopter(object):
         if dt <= 0.0:
             return self.pop_events()
         if dt > self.cfg.max_dt:
-            dt = self.cfg.max_dt             # лаг: не взрываем интегратор (для пауз - pause()/resume())
+            dt = self.cfg.max_dt             # lag spike: do not blow up the integrator (for pauses use pause()/resume())
         if self.crashed:
             self.t += dt
             return self.pop_events()
@@ -608,24 +608,24 @@ class Helicopter(object):
         return self.pop_events()
 
     def pause(self, reason=""):
-        """Заморозить вертолёт (перезагрузка карты, кат-сцена, меню). Время симуляции стоит."""
+        """Freeze the helicopter (map reload, cutscene, menu). Simulation time stands still."""
         if not self.paused:
             self.paused = True
             self._ev("paused", {"reason": reason})
 
     def resume(self, timestamp=None):
-        """Продолжить. Время паузы не засчитывается. timestamp - если вы сами ведёте часы."""
+        """Resume. The paused time does not count. Pass timestamp if you keep the clock yourself."""
         if self.paused:
             self.paused = False
             if timestamp is None:
-                self._reanchor = True        # привяжемся к часам на ближайшем update()
+                self._reanchor = True        # anchor to the clock on the next update()
             else:
                 self._last_ts = timestamp
                 self._reanchor = False
             self._ev("resumed", {})
 
     def reset_clock(self, timestamp=None):
-        """Перепривязать часы (без паузы), например после долгой загрузки."""
+        """Re-anchor the clock (without pausing), e.g. after a long load."""
         if timestamp is None:
             self._reanchor = True
         else:
@@ -656,7 +656,7 @@ class Helicopter(object):
     def mass(self):
         return self.cfg.empty_mass + self.payload_kg + self.fuel_kg
 
-    # ------------------------------------------------------------ аэродинамика
+    # ------------------------------------------------------------ aerodynamics
     def _induced(self, T, rho, vc, vxd):
         c = self.cfg
         vh = math.sqrt(max(T, 0.0) / (2.0 * rho * c.area))
@@ -674,7 +674,7 @@ class Helicopter(object):
         if w <= 0.0:
             return vi_ax, vh
         vi = vh
-        for i in range(6):                 # Glauert: поступательная скорость уменьшает индуктивную
+        for i in range(6):                 # Glauert: forward speed reduces the induced velocity
             d = math.sqrt(vxd * vxd + (vc + vi) ** 2)
             d = max(d, 0.3 * vh)
             vi = 0.5 * vi + 0.5 * vh * vh / d
@@ -692,7 +692,7 @@ class Helicopter(object):
         cp = self.axis["cyclic_pitch"]
         cr = self.axis["cyclic_roll"]
 
-        # ориентация диска (вектор тяги)
+        # rotor disc orientation (thrust vector)
         psi = self.heading * DEG
         th = self.pitch * DEG
         ph = self.roll * DEG
@@ -710,7 +710,7 @@ class Helicopter(object):
         uy /= nn
         uz /= nn
 
-        # скорость относительно воздуха
+        # velocity relative to the air
         vax = self.vx - self.wind[0]
         vay = self.vy - self.wind[1]
         vaz = self.vz - self.wind[2]
@@ -720,11 +720,11 @@ class Helicopter(object):
         agl = self.z - self.ground_z
         ge = clamp(1.0 - agl / c.rotor_diameter, 0.0, 1.0) if c.ground_effect else 0.0
 
-        # тяга
+        # thrust
         t0 = c.t_max * (c.min_coll + (1.0 - c.min_coll) * coll) * nr * nr * rr
         stall_lo = 1.0 if nr >= 0.75 else (nr / 0.75) ** 2
         vh0 = math.sqrt(t0 / (2.0 * rho * c.area)) if t0 > 1.0 else 0.0
-        vrs = 0.0                           # режим вихревого кольца
+        vrs = 0.0                           # vortex ring state
         if vc < 0.0 and vh0 > 1.0:
             x = -vc / vh0
             if x < 1.0:
@@ -732,7 +732,7 @@ class Helicopter(object):
             else:
                 bump = clamp(2.0 - x, 0.0, 1.0)
             vrs = bump * clamp(1.0 - vxd / (0.9 * vh0 + 1.0), 0.0, 1.0)
-        loadf = max(t0 / weight, 0.6)       # срыв на отступающей лопасти
+        loadf = max(t0 / weight, 0.6)       # retreating blade stall
         vcrit = 1.02 * c.vne * math.sqrt(rr) / (1.0 + 0.4 * (loadf - 1.0))
         rbs = clamp((vxd - vcrit) / (0.15 * c.vne), 0.0, 1.0)
         self._vrs = vrs
@@ -742,7 +742,7 @@ class Helicopter(object):
         T = max(T, 0.0)
         self.thrust = T
 
-        # мощность, потребная винту
+        # power required by the rotor
         vi, vh = self._induced(T, rho, vc, vxd)
         vi *= (1.0 - 0.35 * ge)
         mu = vxd / max(c.omega0 * c.rotor_radius * nr, 1.0)
@@ -751,7 +751,7 @@ class Helicopter(object):
         p_tail = c.tail_power_w * (1.0 - c.rotor_dir * c.tail_k * ped) * nr ** 3
         p_load = p_ind + p_prof + p_tail
 
-        # двигатель -> ротор (регулятор оборотов + обгонная муфта)
+        # engine -> rotor (rpm governor + freewheel unit)
         eng = self.engine
         drives = eng.state == "running" and (self.sw["clutch"] or not c.has_clutch)
         target_nr = c.idle_nr + (1.0 - c.idle_nr) * self.axis["throttle"]
@@ -765,7 +765,7 @@ class Helicopter(object):
         self.nr = max(nr + dnr * dt, 0.0)
         self.torque_pct = 100.0 * p_eng / (c.max_cont_w * c.drivetrain_eff * max(nr, 0.2))
 
-        # рыскание
+        # yaw
         omega = max(nr, 0.2) * c.omega0
         torque_acc = max(p_eng - p_tail, 0.0) / omega / c.yaw_inertia / DEG
         tail_acc = c.tail_neutral_acc * (1.0 - c.rotor_dir * c.tail_k * ped) * nr * nr
@@ -779,7 +779,7 @@ class Helicopter(object):
         self.r = clamp(self.r + yaw_acc * dt, -c.max_yaw_rate, c.max_yaw_rate)
         self.heading = (self.heading + self.r * dt) % 360.0
 
-        # тангаж/крен
+        # pitch/roll
         lightness = 1.0
         if self.on_ground:
             lightness = clamp((thrust_up / weight - 0.85) / 0.15, 0.0, 1.0)
@@ -794,7 +794,7 @@ class Helicopter(object):
         else:
             q_t = -cp * c.max_pitch_rate + mu_term
             p_t = cr * c.max_roll_rate
-        q_t += 40.0 * rbs                   # срыв: кабрирование и заваливание
+        q_t += 40.0 * rbs                   # stall: pitch-up and roll-off
         p_t -= 30.0 * rbs
         p_t += 15.0 * vrs * math.sin(7.0 * self.t)
         k = 1.0 - math.exp(-dt / c.att_tau)
@@ -806,7 +806,7 @@ class Helicopter(object):
             self.pitch -= self.pitch * (1.0 - lightness) * 3.0 * dt
             self.roll -= self.roll * (1.0 - lightness) * 3.0 * dt
 
-        # силы
+        # forces
         hs = math.sqrt(vax * vax + vay * vay)
         fxn = T * ux - 0.5 * rho * c.cda_h * hs * vax
         fyn = T * uy - 0.5 * rho * c.cda_h * hs * vay
@@ -841,7 +841,7 @@ class Helicopter(object):
         if c.auto_ground and not self.on_ground and self.z <= self.ground_z:
             self.reached_surface(self.ground_z)
 
-    # ------------------------------------------------------------ предупреждения и повреждения
+    # ------------------------------------------------------------ warnings and damage
     def airspeed(self):
         vax = self.vx - self.wind[0]
         vay = self.vy - self.wind[1]
@@ -854,7 +854,7 @@ class Helicopter(object):
         self._warn("low_rotor_rpm", (not self.on_ground) and 0.3 < self.nr < c.nr_low)
         self._warn("high_rotor_rpm", self.nr > c.nr_high)
         if self.torque_pct > 100.0 and self.nr > 0.97:
-            self._ot_t += dt                  # короткий пик (раскрутка, рывок шагом) - норма
+            self._ot_t += dt                  # a short peak (spool-up, a collective yank) is normal
         else:
             self._ot_t = max(self._ot_t - 2.0 * dt, 0.0)
         self._warn("overtorque", self._ot_t > 3.0)
@@ -875,7 +875,7 @@ class Helicopter(object):
         if self.nr > c.nr_overspeed and not self.crashed:
             self._crash("rotor_overspeed", {"nr": self.nr})
 
-    # ------------------------------------------------------------ столкновения (сообщает игра)
+    # ------------------------------------------------------------ collisions (reported by the game)
     def _crash(self, reason, data):
         if self.crashed:
             return
@@ -896,7 +896,7 @@ class Helicopter(object):
         self._ev("crashed", data)
 
     def reached_surface(self, ground_z=None):
-        """Игра: шасси/фюзеляж коснулись поверхности. Если уже на земле - только обновляет высоту."""
+        """Game: the gear/fuselage touched a surface. If already on the ground, only updates the ground height."""
         if self.crashed:
             return
         c = self.cfg
@@ -928,21 +928,21 @@ class Helicopter(object):
             self._ev("touchdown", info)
 
     def surface_lost(self):
-        """Игра: поверхность под вертолётом пропала (обрыв, край крыши) - он снова в воздухе."""
+        """Game: the surface under the helicopter is gone (a cliff, a roof edge) - it is airborne again."""
         if self.on_ground and not self.crashed:
             self.on_ground = False
             self._ev("left_surface", {})
 
     def set_ground_level(self, ground_z):
-        """Игра: высота поверхности под вертолётом (для эффекта земли и высоты AGL)."""
+        """Game: height of the surface under the helicopter (for ground effect and AGL height)."""
         self.ground_z = ground_z / self.lk
 
     def set_wind(self, east, north, up=0.0):
-        """Ветер в единицах API (на будущее; в расчётах скорость уже считается относительно воздуха)."""
+        """Wind in API units (for the future; speeds are already computed relative to the air)."""
         self.wind = [east / self.lk, north / self.lk, up / self.lk]
 
     def reached_wall(self, nx=None, ny=None, part="fuselage"):
-        """Игра: упёрлись в стену/препятствие. (nx, ny) - нормаль стены в сторону вертолёта.
+        """Game: hit a wall/obstacle. (nx, ny) is the wall normal pointing towards the helicopter.
         part: "fuselage" | "rotor" | "tail"."""
         if self.crashed:
             return
@@ -971,11 +971,11 @@ class Helicopter(object):
             self._ev("bump", info)
 
     def reached_map_edge(self, nx=None, ny=None, mode=None):
-        """Игра: вертолёт у края карты. Вертолёт карту не знает.
-        mode "pass" (по умолчанию из конфига): физика не меняется, только событие map_edge -
-          игра сама перекидывает игрока на другую карту (вертолёту об этом знать не нужно).
-        mode "block": гасит составляющую скорости в сторону края (нормаль (nx, ny) смотрит внутрь карты;
-          без нормали - гасит всю горизонтальную скорость). Звать каждый кадр, пока упираемся."""
+        """Game: the helicopter is at the map edge. The helicopter does not know the map.
+        mode "pass" (the config default): physics is unchanged, only a map_edge event is emitted -
+          the game moves the player to another map itself (the helicopter does not need to know).
+        mode "block": cancels the velocity component towards the edge (the normal (nx, ny) points into the map;
+          without a normal it cancels all horizontal speed). Call it every frame while pushing against the edge."""
         if self.crashed:
             return
         mode = mode or self.cfg.map_edge_mode
@@ -988,12 +988,12 @@ class Helicopter(object):
                 if closing > 0.0:
                     self.vx += closing * nx
                     self.vy += closing * ny
-        if self.t - self._edge_t >= 1.0:       # не спамим событием, если зовут каждый кадр
+        if self.t - self._edge_t >= 1.0:       # do not spam the event if it is called every frame
             self._edge_t = self.t
             self._ev("map_edge", {"mode": mode})
 
     def fail_engine(self, reason="failure"):
-        """Игра: отказ двигателя извне (попадание, птица, баг-триггер). Дальше - авторотация."""
+        """Game: an engine failure from outside (a hit, a bird strike, a script trigger). Autorotation follows."""
         if self.engine.state != "failed" and not self.crashed:
             self.engine.health = 0.0
             self._ev("engine_failure", {"reason": reason})
@@ -1012,7 +1012,7 @@ class Helicopter(object):
         self._crash("water", {"speed": math.sqrt(self.vx ** 2 + self.vy ** 2 + self.vz ** 2)})
 
     def collision(self, kind, **kw):
-        """Единая точка входа: kind = surface|wall|ceiling|water|rotor|tail."""
+        """Single entry point: kind = surface|wall|ceiling|water|rotor|tail."""
         if kind == "surface":
             self.reached_surface(kw.get("ground_z"))
         elif kind == "wall":
@@ -1027,7 +1027,7 @@ class Helicopter(object):
             self.reached_water()
 
     def repair(self):
-        """После крушения: вернуть в рабочее состояние на месте (стоит на земле)."""
+        """After a crash: restore to working order on the spot (standing on the ground)."""
         self.crashed = False
         self.crash_reason = ""
         self.airframe_health = 1.0
@@ -1039,7 +1039,7 @@ class Helicopter(object):
         self.warn = {}
         self.sw["rotor_brake"] = True
 
-    # ------------------------------------------------------------ изменения -> события
+    # ------------------------------------------------------------ changes -> events
     def _reset_reports(self):
         self._rep = {"nr": 0.0, "n1": 0.0, "torque": 0.0, "z": self.z, "x": self.x, "y": self.y,
                      "heading": self.heading, "pitch": 0.0, "roll": 0.0, "gs": 0.0, "vs": 0.0,
@@ -1061,7 +1061,7 @@ class Helicopter(object):
         if abs(self.z - r["z"]) >= c.alt_step:
             r["z"] = self.z
             self._ev("altitude_changed", {"z": self.z, "agl": self.z - self.ground_z})
-        # смещение с прошлого отчёта: игра двигает игрока по нему, карту вертолёт не знает
+        # displacement since the last report: the game moves the player by it; the helicopter does not know the map
         mdx = self.x - r["mx"]
         mdy = self.y - r["my"]
         mdz = self.z - r["mz"]
@@ -1119,7 +1119,7 @@ class Helicopter(object):
             r["bus"] = self.bus_power
             self._ev("bus_power_changed", {"on": self.bus_power})
 
-    # ------------------------------------------------------------ снимок состояния
+    # ------------------------------------------------------------ state snapshot
     def get_state(self):
         c = self.cfg
         gs = math.sqrt(self.vx * self.vx + self.vy * self.vy)

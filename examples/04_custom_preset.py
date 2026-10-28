@@ -1,15 +1,15 @@
-"""Пример 4: свои параметры и свой пресет; как меняются характеристики с высотой и загрузкой.
-Запуск: python3 04_custom_preset.py"""
+"""Example 4: your own parameters and your own preset; how altitude and load change the characteristics.
+Run: python3 04_custom_preset.py"""
 from common import Helicopter, HelicopterConfig, PRESETS, clamp
 
 
 def hover_collective(config, alt, fuel_kg=None):
-    """Шаг, при котором вертолёт висит на высоте alt (метры над уровнем моря), бисекцией."""
+    """The collective at which the helicopter hovers at altitude alt (meters above sea level), by bisection."""
     lo, hi = 0.0, 1.0
     for i in range(14):
         m = (lo + hi) / 2.0
         h = Helicopter(config, timestamp=0.0, z=alt, fuel_kg=fuel_kg)
-        h.ground_z = alt - 5000.0          # земли далеко внизу: эффект земли не мешает
+        h.ground_z = alt - 5000.0          # the ground is far below: ground effect does not interfere
         h.on_ground = False
         for n in ("battery", "fuel_valve", "fuel_pump", "generator"):
             h.switch(n, True)
@@ -40,28 +40,28 @@ def hover_collective(config, alt, fuel_kg=None):
     return m, h.p_eng_w / 1000.0, h.nr
 
 
-# 1. Любой параметр можно переопределить при создании конфига. Ключи - в _DEFAULTS в helisim.py.
+# 1. Any parameter can be overridden when creating the config. The keys are in _DEFAULTS in helisim.py.
 heavier = HelicopterConfig("medium_turbine", payload_kg=300.0, name="medium_loaded")
-print("Загрузка 80 кг -> 300 кг (средний, уровень моря и 2000 м):")
-for label, cfg in (("налегке ", HelicopterConfig("medium_turbine")), ("загружен", heavier)):
+print("Load 80 kg -> 300 kg (medium, sea level and 2000 m):")
+for label, cfg in (("light   ", HelicopterConfig("medium_turbine")), ("loaded  ", heavier)):
     for alt in (0.0, 2000.0):
         m, p, nr = hover_collective(cfg, alt)
-        print("  %s, высота %4.0f м: шаг на висении %.2f, мощность %.0f кВт, обороты %.0f%%" % (label, alt, m, p, nr * 100))
+        print("  %s, altitude %4.0f m: hover collective %.2f, power %.0f kW, rpm %.0f%%" % (label, alt, m, p, nr * 100))
 
-# 2. Свой пресет: только отличия от значений по умолчанию. Регистрируем и пользуемся по имени.
+# 2. Your own preset: only the differences from the defaults. Register it and use it by name.
 PRESETS["cargo_turbine"] = dict(
     name="cargo_turbine", mtow=1800.0, empty_mass=1000.0, payload_kg=250.0, fuel_capacity=350.0,
     max_power_kw=420.0, max_cont_power_kw=360.0, rotor_diameter=11.0, rotor_inertia=1600.0,
     thrust_ratio=1.4, kappa=1.3, profile_power_kw=50.0, drivetrain_eff=0.82, heave_damp=5.0,
     max_pitch_rate=30.0, max_roll_rate=40.0, att_tau=0.4, vne=58.0, cda_h=1.5,
 )
-print("Свой пресет cargo_turbine:")
+print("Own preset cargo_turbine:")
 heli = Helicopter("cargo_turbine", timestamp=0.0)
-print("  полная масса с грузом и полными баками: %.0f кг, диаметр винта %.1f м" % (heli.mass(), heli.cfg.rotor_diameter))
+print("  gross mass with payload and full tanks: %.0f kg, rotor diameter %.1f m" % (heli.mass(), heli.cfg.rotor_diameter))
 m, p, nr = hover_collective("cargo_turbine", 0.0)
-print("  шаг на висении %.2f, мощность %.0f кВт из %.0f" % (m, p, heli.cfg.max_power_kw * heli.cfg.drivetrain_eff))
+print("  hover collective %.2f, power %.0f kW of %.0f" % (m, p, heli.cfg.max_power_kw * heli.cfg.drivetrain_eff))
 
-# 3. Параметры можно менять и у живого вертолёта, потом вызвать recalc():
+# 3. Parameters of a live helicopter can be changed too; then call recalc():
 heli.cfg.rotor_diameter = 12.0
 heli.cfg.recalc()
-print("После правки диаметра: площадь диска %.1f кв. м" % heli.cfg.area)
+print("After changing the diameter: rotor disc area %.1f sq m" % heli.cfg.area)

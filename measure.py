@@ -1,10 +1,10 @@
-"""Замер характеристик пресетов: python3 measure.py"""
+"""Measure preset characteristics: python3 measure.py"""
 import math
 from helisim import Helicopter, density_ratio
-import test_scenarios_helpers as T
+import testutil as T
 
 def hover_coll(h, alt):
-    """Подбор шага для висения (бисекция по среднему vz за 4 с)."""
+    """Find the collective that hovers (bisection on the mean vz over 4 s)."""
     lo, hi = 0.0, 1.0
     for _ in range(14):
         m = (lo + hi) / 2
@@ -26,7 +26,7 @@ for p in PRESETS:
     out["hover_coll_50m"] = round(m, 2)
     out["hover_P_pct"] = round(100 * g.p_eng_w / c.max_power_w, 0)
     out["nr_hover"] = round(g.nr * 100, 1)
-    # макс. скорость на полном стике
+    # max speed at full forward stick
     g = T.airborne_like(Helicopter(p, timestamp=0.0), 400.0)
     t = g._last_ts
     for i in range(int(90 / 0.05)):
@@ -37,14 +37,14 @@ for p in PRESETS:
     out["vmax_ms"] = round(g.airspeed(), 1); out["vne"] = c.vne
     out["vmax_vs_vne"] = round(g.airspeed() / c.vne, 2)
     out["warn_at_vmax"] = g.get_state()["warnings"]
-    # макс. подъём (полный шаг, висение) на 50 м
+    # max climb (full collective, from a hover) at 50 m
     g = T.airborne_like(Helicopter(p, timestamp=0.0), 50.0)
     t = g._last_ts
     g.ground_z = -5000.0; peak = 0.0
     for i in range(int(12 / 0.05)):
         t += 0.05; g.turn("collective", 1.0); g.update(t); peak = max(peak, g.vz)
     out["climb_peak/12s_ms"] = (round(peak, 1), round(g.vz, 1)); out["nr_full"] = round(g.nr * 100, 1)
-    # скорость разворота на полной педали
+    # yaw rate at full pedal
     def yawtest(ped):
         g = T.airborne_like(Helicopter(p, timestamp=0.0), 50.0); g.ground_z = -5000.0; g.axis["collective"] = m
         t = g._last_ts
@@ -54,7 +54,7 @@ for p in PRESETS:
     r_right = yawtest(1.0).r
     g = yawtest(-1.0)
     out["yaw_full_right/left_dps"] = (round(r_right), round(g.r)); out["yaw_pedal0_dps"] = round(yawtest(0.0).r)
-    # потолок висения: на какой высоте шага 1.0 уже не держит
+    # hover ceiling: the altitude where collective 1.0 no longer holds
     ceil = None
     for alt in range(0, 6001, 500):
         g = T.airborne_like(Helicopter(p, timestamp=0.0), float(alt)); g.ground_z = float(alt) - 5000
@@ -63,5 +63,5 @@ for p in PRESETS:
             t += 0.05; g.turn("collective", 1.0); g.update(t)
         if g.vz < 0.3 and ceil is None: ceil = alt
     out["hover_ceiling_m(full coll)"] = ceil
-    # время раскрутки ротора холодный старт -> 98%: берём из демо
+    # rotor spin-up time from a cold start to 98%: see the demo
     print(p, out)
