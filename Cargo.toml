@@ -1,0 +1,24 @@
+[package]
+name = "helisim"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "BSD-3-Clause"
+description = "A helicopter flight model with no graphics and no sound: a library a game drives, and it answers in numbers"
+repository = "https://github.com/denizsincar29/helisim"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+# Bindings for the browser, so a wasm game can drive the same model.
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
